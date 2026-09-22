@@ -23,6 +23,7 @@ BarWidget {
   function close() { if (panelLoader.item) panelLoader.item.close() }
   function closeForPopoutSwitch() { if (panelLoader.item) panelLoader.item.closeForPopoutSwitch() }
   function togglePanel() { if (panelLoader.item) panelLoader.item.toggle() }
+  function toggleSettings() { if (panelLoader.item) panelLoader.item.toggleSettings() }
 
   implicitWidth: button.implicitWidth
   implicitHeight: button.implicitHeight
@@ -42,10 +43,11 @@ BarWidget {
     anchors.fill: parent
     bar: root.bar
     text: root.runningCount > 0 ? "Genos " + root.runningCount : "Genos"
-    tooltipText: "Genos servers"
+    tooltipText: "Left-click servers · right-click settings"
     onPressed: function(pressedButton) {
       if (pressedButton === Qt.MiddleButton) root.refresh()
-      else if (pressedButton === Qt.LeftButton) root.togglePanel()
+      else if (pressedButton === Qt.RightButton) root.toggleSettings()
+      else root.togglePanel()
     }
   }
 }

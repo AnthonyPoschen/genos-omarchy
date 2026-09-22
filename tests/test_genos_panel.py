@@ -161,6 +161,24 @@ class ConfirmTests(unittest.TestCase):
 
 
 class CredentialTests(unittest.TestCase):
+    def test_settings_token_is_the_panel_session(self):
+        resolved = panel.resolve_credential(
+            ORIGIN,
+            settings_token="settings-token",
+            environ={"GENOS_TOKEN": "env-token"},
+            keyring_lookup=lambda _origin: "key-token",
+            read_file=lambda _origin: "file-token",
+        )
+        self.assertEqual((resolved.source, resolved.token), ("settings", "settings-token"))
+        with self.assertRaises(panel.CredentialError) as caught:
+            panel.resolve_credential(ORIGIN, settings_token="  ")
+        self.assertIn("Paste a personal access token", str(caught.exception))
+        origin, token = panel.parse_settings_payload(b'{"origin":"https://genosservers.com","token":"pasted"}\n')
+        self.assertEqual(origin, "https://genosservers.com")
+        self.assertEqual(token, "pasted")
+        self.assertEqual(panel.panel_origin(None, {}), panel.DEFAULT_ORIGIN)
+        self.assertEqual(panel.panel_origin("https://genosservers.com/"), "https://genosservers.com")
+
     def test_resolver_call_order_with_fakes(self):
         calls = []
 

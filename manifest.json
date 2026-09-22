@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "io.github.anthonyposchen.genos",
   "name": "Genos",
-  "version": "2026.9.22",
+  "version": "2026.9.22+1",
   "author": "Anthony Poschen",
   "description": "Start, stop, and restart your Genos game servers from the bar.",
   "kinds": ["bar-widget"],
@@ -14,6 +14,26 @@
     "description": "Your Genos servers, with name, game, status, and start, stop, and restart.",
     "category": "Info",
     "defaultSection": "right",
-    "allowMultiple": false
+    "allowMultiple": false,
+    "defaults": {
+      "origin": "https://genosservers.com",
+      "token": ""
+    },
+    "schema": [
+      {
+        "key": "origin",
+        "type": "string",
+        "label": "Genos site",
+        "defaultValue": "https://genosservers.com",
+        "description": "The site where this account lives. Leave the default unless you use another Genos address."
+      },
+      {
+        "key": "token",
+        "type": "string",
+        "label": "Personal access token",
+        "defaultValue": "",
+        "description": "Paste a token from the account page. The bar keeps it with this widget."
+      }
+    ]
   }
 }

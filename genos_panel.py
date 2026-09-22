@@ -38,6 +38,7 @@ MENU_FIELDS = (
     "confirmRestart",
 )
 LOOPBACK_HOSTS = frozenset({"localhost", "127.0.0.1", "genos.localhost"})
+DEFAULT_ORIGIN = "https://genosservers.com"
 BODY_MAX = 262144
 CRED_MAX = 65536
 CONFIG_MAX = 65536
@@ -309,10 +310,17 @@ def _validate_token(token: str) -> None:
 def resolve_credential(
     origin: str,
     *,
+    settings_token: str | None = None,
     environ: Mapping[str, str] | None = None,
     keyring_lookup: Callable[[str], str | None] | None = None,
     read_file: Callable[[str], str | None] | None = None,
 ) -> Resolved:
+    if settings_token is not None:
+        token = settings_token.strip()
+        if token == "":
+            raise CredentialError("Paste a personal access token.")
+        _validate_token(token)
+        return Resolved(token, "settings")
     env = os.environ if environ is None else environ
     token = env.get("GENOS_TOKEN")
     if isinstance(token, str) and token.strip() != "":
@@ -330,7 +338,7 @@ def resolve_credential(
     if found:
         _validate_token(found)
         return Resolved(found, "file")
-    raise CredentialError("no Genos token for this origin; sign in or set GENOS_TOKEN")
+    raise CredentialError("Paste a personal access token.")
 
 
 def _path_parts(path: str) -> list[str]:
@@ -807,6 +815,8 @@ def _json_object(data: bytes) -> dict[str, object]:
 
 def fetch_menu(origin: str, token: str, transport: HttpTransport) -> list[dict[str, object]]:
     status, data = transport.request(origin, "GET", "/api/v1/servers", _auth_headers(token), None)
+    if status in (401, 403):
+        raise CredentialError("That token was not accepted.")
     if status != 200:
         raise ProtocolError(_response_message(status, data, token))
     try:
@@ -823,6 +833,8 @@ def post_action(origin: str, token: str, server_id: str, action: str, transport:
     headers = _auth_headers(token, {"Content-Type": "application/json", "Idempotency-Key": str(uuid.uuid4())})
     path = "/api/v1/servers/" + quote(server_id, safe="") + "/actions"
     status, data = transport.request(origin, "POST", path, headers, body)
+    if status in (401, 403):
+        raise CredentialError("That token was not accepted.")
     if status < 200 or status >= 300:
         raise ProtocolError(_response_message(status, data, token))
     return status
@@ -1102,6 +1114,59 @@ def _scrub(payload: dict[str, object], token: str) -> dict[str, object]:
     return payload
 
 
+def parse_settings_payload(raw: bytes) -> tuple[str | None, str | None]:
+    if len(raw) > CRED_MAX:
+        raise CredentialError("settings were too large")
+    if b"\n" in raw:
+        raw = raw.split(b"\n", 1)[0]
+    if raw.endswith(b"\r"):
+        raw = raw[:-1]
+    if not raw:
+        return None, None
+    try:
+        document = json.loads(raw.decode("utf-8"))
+    except (UnicodeError, json.JSONDecodeError) as exc:
+        raise CredentialError("settings were not valid") from exc
+    if not isinstance(document, dict):
+        raise CredentialError("settings were not valid")
+    origin = document.get("origin")
+    token = document.get("token")
+    if origin is not None and not isinstance(origin, str):
+        raise CredentialError("settings were not valid")
+    if token is not None and not isinstance(token, str):
+        raise CredentialError("settings were not valid")
+    return origin, token
+
+
+def read_settings_payload(timeout: int = 2) -> tuple[str | None, str | None]:
+    fd = sys.stdin.fileno()
+    chunks: list[bytes] = []
+    total = 0
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline and total <= CRED_MAX:
+        ready, _, _ = select.select([fd], [], [], max(0, deadline - time.monotonic()))
+        if not ready:
+            break
+        chunk = os.read(fd, CRED_MAX + 1 - total)
+        if not chunk:
+            break
+        chunks.append(chunk)
+        total += len(chunk)
+        if b"\n" in chunk:
+            break
+    return parse_settings_payload(b"".join(chunks))
+
+
+def panel_origin(explicit: str | None, environ: Mapping[str, str] | None = None) -> str:
+    if isinstance(explicit, str) and explicit.strip():
+        return canonical_origin(explicit)
+    env = os.environ if environ is None else environ
+    raw = env.get("GENOS_HOST", "")
+    if isinstance(raw, str) and raw.strip():
+        return canonical_origin(raw)
+    return DEFAULT_ORIGIN
+
+
 def parse_action_args(argv: list[str]) -> tuple[str, str, bool]:
     confirmed = False
     parts: list[str] = []
@@ -1140,12 +1205,21 @@ def main(argv: list[str] | None = None) -> int:
             emit({"ok": False, "error": "usage", "message": "usage: list | action | login | connect"})
             return 2
         command = args[0]
+        from_stdin = "--from-stdin" in args[1:]
+        settings_origin = None
+        settings_token = None
+        if from_stdin:
+            settings_origin, settings_token = read_settings_payload()
         if command == "list":
-            emit(do_list())
+            origin = panel_origin(settings_origin)
+            credential = resolve_credential(origin, settings_token=settings_token) if from_stdin else resolve_credential(origin)
+            emit(do_list(origin=origin, credential=credential))
         elif command == "action":
-            server_id, action, confirmed = parse_action_args(args[1:])
+            server_id, action, confirmed = parse_action_args([arg for arg in args[1:] if arg != "--from-stdin"])
+            origin = panel_origin(settings_origin)
+            credential = resolve_credential(origin, settings_token=settings_token) if from_stdin else resolve_credential(origin)
             try:
-                emit(do_action(server_id, action, confirmed))
+                emit(do_action(server_id, action, confirmed, origin=origin, credential=credential))
             except ConfirmRequired as exc:
                 emit(
                     {

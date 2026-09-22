@@ -36,6 +36,8 @@ Panel {
   property bool sawResult: false
   property bool loginSaved: false
   property bool actionSaved: false
+  property bool settingsOpen: false
+  property string settingsMessage: ""
 
   function fileFromUrl(url) {
     var text = String(url)
@@ -76,13 +78,39 @@ Panel {
       var value = String(Quickshell.env(keys[i]) || "")
       if (value.length > 0) env[keys[i]] = value
     }
-    var host = String(Quickshell.env("GENOS_HOST") || "")
+    var host = String(root.setting("origin", "https://genosservers.com") || "").trim()
     if (host.length > 0) env["GENOS_HOST"] = host
-    if (includeToken) {
-      var token = String(Quickshell.env("GENOS_TOKEN") || "")
-      if (token.length > 0) env["GENOS_TOKEN"] = token
-    }
     return env
+  }
+
+  function savedToken() {
+    return String(root.setting("token", "") || "").trim()
+  }
+
+  function savedOrigin() {
+    var origin = String(root.setting("origin", "https://genosservers.com") || "").trim()
+    return origin.length > 0 ? origin : "https://genosservers.com"
+  }
+
+  function accountUrl() {
+    var origin = root.savedOrigin().replace(/\/+$/, "")
+    return origin + "/account#create-token"
+  }
+
+  function saveSetting(key, value) {
+    var nextSettings = {}
+    var existingKey
+    for (existingKey in root.settings) nextSettings[existingKey] = root.settings[existingKey]
+    nextSettings[key] = value
+    root.settings = nextSettings
+    if (root.hostWidget) root.hostWidget.settings = nextSettings
+    if (root.bar && Util && Util.shellQuote) {
+      root.bar.run("omarchy bar set " + Util.shellQuote(root.moduleName) + " " + Util.shellQuote(key) + " " + Util.shellQuote(JSON.stringify(value)) + " --json")
+    }
+  }
+
+  function writeSettings() {
+    root.pendingInput = JSON.stringify({ token: root.savedToken(), origin: root.savedOrigin() })
   }
 
   function openerEnvironment() {
@@ -119,7 +147,8 @@ Panel {
     root.operation = String(args[0])
     helper.command = command
     helper.clearEnvironment = true
-    helper.environment = root.childEnvironment(includeToken)
+    helper.environment = root.childEnvironment(false)
+    if (includeToken) root.writeSettings()
     deadline.interval = args[0] === "login" ? 960000 : 20000
     deadline.restart()
     helper.running = true
@@ -128,27 +157,60 @@ Panel {
 
   function refresh() {
     if (!root.opened) return
-    root.startHelper(["list"], true)
+    if (root.savedToken() === "") {
+      root.needsLogin = true
+      root.servers = []
+      root.runningCount = 0
+      root.credentialSource = ""
+      return
+    }
+    root.needsLogin = false
+    root.startHelper(["list", "--from-stdin"], true)
   }
 
-  function startLogin() {
-    root.userCode = ""
-    root.verificationUri = ""
-    root.loginSaved = false
-    root.startHelper(["login"], false)
-  }
+  function toggleSettings() { root.settingsOpen = !root.settingsOpen }
+  function openSettings() { root.settingsOpen = true }
 
   function submitToken() {
-    var value = tokenField.text
+    var value = String(tokenField.text || "").trim()
     tokenField.text = ""
-    if (!value) return
-    root.pendingInput = value
-    if (!root.startHelper(["connect"], false)) root.pendingInput = ""
+    if (!value) {
+      root.status = "Paste a personal access token."
+      return
+    }
+    root.saveSetting("token", value)
+    root.needsLogin = false
+    root.status = ""
+    root.refresh()
   }
 
-  function openApproval() {
-    if (!root.allowedUri(root.verificationUri) || opener.running) return
-    opener.command = ["/usr/bin/xdg-open", "--", root.verificationUri]
+  function saveOrigin() {
+    var value = String(originField.text || "").trim().replace(/\/+$/, "")
+    if (value === "") value = "https://genosservers.com"
+    if (!root.allowedUri(value)) {
+      root.settingsMessage = "Use https://genosservers.com, or a loopback address such as http://genos.localhost:8000."
+      return
+    }
+    root.settingsMessage = ""
+    root.saveSetting("origin", value)
+    originField.text = value
+  }
+
+  function clearToken() {
+    root.saveSetting("token", "")
+    tokenField.text = ""
+    settingsTokenField.text = ""
+    root.servers = []
+    root.runningCount = 0
+    root.needsLogin = true
+    root.status = ""
+    root.settingsMessage = "Token removed from this widget."
+  }
+
+  function openAccount() {
+    var url = root.accountUrl()
+    if (!root.allowedUri(url) || opener.running) return
+    opener.command = ["/usr/bin/xdg-open", "--", url]
     opener.clearEnvironment = true
     opener.environment = root.openerEnvironment()
     opener.running = true
@@ -280,7 +342,7 @@ Panel {
       root.servers = rows
       root.runningCount = root.countRunning(rows)
       root.needsLogin = false
-      root.credentialSource = (doc.source === "env" || doc.source === "keyring" || doc.source === "file") ? doc.source : ""
+      root.credentialSource = ""
       root.status = rows.length === 0 ? "No servers on this account." : ""
       return
     }
@@ -290,7 +352,11 @@ Panel {
       return
     }
     if (doc.ok === false || doc.error) {
-      if (doc.error === "credentials") root.needsLogin = true
+      if (doc.error === "credentials") {
+        root.needsLogin = true
+        root.servers = []
+        root.runningCount = 0
+      }
       root.status = root.tooltipPlain(doc.message || "Request failed")
     }
   }
@@ -308,11 +374,17 @@ Panel {
   }
 
   onOpenedChanged: {
-    if (root.opened) root.refresh()
-    else {
+    if (root.opened) {
+      root.settingsOpen = false
+      if (root.savedToken() === "") {
+        root.needsLogin = true
+        root.status = ""
+        Qt.callLater(function() { tokenField.forceActiveFocus() })
+      } else root.refresh()
+    } else {
       tokenField.text = ""
       root.pendingInput = ""
-      if (root.operation === "login") root.stopHelper()
+      root.stopHelper()
     }
   }
   Component.onDestruction: {
@@ -349,7 +421,7 @@ Panel {
     workingDirectory: String(Quickshell.env("HOME") || "/")
     environment: ({ "PATH": "/usr/bin" })
     onStarted: {
-      if (root.operation === "connect" && root.pendingInput.length > 0) {
+      if (root.pendingInput.length > 0 && (root.operation === "list" || root.operation === "action")) {
         var chunk = root.pendingInput
         root.pendingInput = ""
         helper.write(chunk + "\n")
@@ -420,17 +492,6 @@ Panel {
           }
           PlainText {
             width: parent.width
-            visible: root.credentialSource !== ""
-            text: root.credentialSource === "file"
-              ? "Credentials: file"
-              : (root.credentialSource === "keyring" ? "Credentials: keyring" : "Credentials: environment")
-            color: root.barForeground
-            opacity: 0.62
-            font.family: root.uiFont
-            font.pixelSize: Style.font.bodySmall
-          }
-          PlainText {
-            width: parent.width
             visible: root.status !== ""
             text: root.status
             wrapMode: Text.WordWrap
@@ -443,65 +504,47 @@ Panel {
             width: parent.width
             visible: root.needsLogin
             spacing: Style.space(8)
-            Button {
-              text: "Sign in"
-              bordered: true
-              fontFamily: root.uiFont
-              foreground: root.barForeground
-              enabled: !helper.running
-              onClicked: root.startLogin()
-            }
             PlainText {
               width: parent.width
-              visible: root.userCode !== ""
-              text: "Code " + root.userCode
+              text: "Paste a personal access token. It is saved with this bar widget."
+              wrapMode: Text.WordWrap
               color: root.barForeground
               font.family: root.uiFont
               font.pixelSize: Style.font.body
-              font.bold: true
-            }
-            Button {
-              visible: root.verificationUri !== ""
-              text: "Open approval page"
-              bordered: true
-              fontFamily: root.uiFont
-              foreground: root.barForeground
-              onClicked: root.openApproval()
-            }
-            PlainText {
-              width: parent.width
-              text: "Or paste a token"
-              color: root.barForeground
-              font.family: root.uiFont
-              font.pixelSize: Style.font.bodySmall
             }
             TextField {
               id: tokenField
               width: parent.width
               password: true
               maximumLength: 4096
-              placeholderText: "Token"
+              placeholderText: "Personal access token"
               font.family: root.uiFont
               foreground: root.barForeground
               onAccepted: root.submitToken()
             }
-            Row {
-              spacing: Style.space(6)
-              Button {
-                text: "Connect"
-                bordered: true
-                fontFamily: root.uiFont
-                foreground: root.barForeground
-                enabled: !helper.running
-                onClicked: root.submitToken()
-              }
-              Button {
-                text: "Clear"
-                bordered: true
-                fontFamily: root.uiFont
-                foreground: root.barForeground
-                onClicked: tokenField.text = ""
-              }
+            Button {
+              text: "Save token"
+              bordered: true
+              fontFamily: root.uiFont
+              foreground: root.barForeground
+              enabled: !helper.running
+              onClicked: root.submitToken()
+            }
+            Button {
+              text: "Create a token"
+              bordered: true
+              fontFamily: root.uiFont
+              foreground: root.barForeground
+              onClicked: root.openAccount()
+            }
+            PlainText {
+              width: parent.width
+              text: "Opens the account page so you can create a token, then paste it here."
+              wrapMode: Text.WordWrap
+              color: root.barForeground
+              opacity: 0.62
+              font.family: root.uiFont
+              font.pixelSize: Style.font.bodySmall
             }
           }
 
@@ -608,6 +651,138 @@ Panel {
             }
           }
         }
+      }
+    }
+  }
+
+  KeyboardPanel {
+    id: settingsPopup
+    anchorItem: root.anchorItem
+    owner: root.barIdentity
+    bar: root.bar
+    open: root.settingsOpen
+    focusTarget: settingsCatcher
+    contentWidth: settingsPopup.fittedContentWidth(Style.space(430))
+    contentHeight: settingsPopup.fittedContentHeight(settingsContent.implicitHeight)
+
+    PanelKeyCatcher {
+      id: settingsCatcher
+      anchors.fill: parent
+      blocked: originField.activeFocus || settingsTokenField.activeFocus
+      onCloseRequested: root.settingsOpen = false
+
+      Column {
+        id: settingsContent
+        width: parent.width
+        spacing: Style.space(10)
+
+        Item {
+          width: parent.width
+          height: settingsTitle.implicitHeight
+          PlainText {
+            id: settingsTitle
+            text: "Settings"
+            color: root.barForeground
+            font.family: root.uiFont
+            font.pixelSize: Style.font.title
+            font.bold: true
+          }
+          PlainText {
+            anchors.right: parent.right
+            anchors.verticalCenter: parent.verticalCenter
+            text: "Right-click to close"
+            color: root.barForeground
+            opacity: 0.52
+            font.family: root.uiFont
+            font.pixelSize: Style.font.caption
+          }
+        }
+
+        PlainText {
+          width: parent.width
+          text: "Genos site"
+          color: root.barForeground
+          font.family: root.uiFont
+          font.pixelSize: Style.font.bodySmall
+        }
+        TextField {
+          id: originField
+          width: parent.width
+          text: root.savedOrigin()
+          placeholderText: "https://genosservers.com"
+          font.family: root.uiFont
+          foreground: root.barForeground
+          selectByMouse: true
+          onAccepted: root.saveOrigin()
+        }
+        Button {
+          text: "Save site"
+          bordered: true
+          fontFamily: root.uiFont
+          foreground: root.barForeground
+          onClicked: root.saveOrigin()
+        }
+
+        PlainText {
+          width: parent.width
+          text: root.savedToken() === "" ? "No token saved yet." : "A token is saved with this widget."
+          wrapMode: Text.WordWrap
+          color: root.barForeground
+          font.family: root.uiFont
+          font.pixelSize: Style.font.body
+        }
+        TextField {
+          id: settingsTokenField
+          width: parent.width
+          password: true
+          maximumLength: 4096
+          placeholderText: "Replace personal access token"
+          font.family: root.uiFont
+          foreground: root.barForeground
+          onAccepted: {
+            var value = String(text || "").trim()
+            text = ""
+            if (value === "") return
+            root.saveSetting("token", value)
+            root.needsLogin = false
+            root.settingsMessage = "Token saved."
+          }
+        }
+        Row {
+          spacing: Style.space(6)
+          Button {
+            text: "Create a token"
+            bordered: true
+            fontFamily: root.uiFont
+            foreground: root.barForeground
+            onClicked: root.openAccount()
+          }
+          Button {
+            text: "Remove token"
+            bordered: true
+            fontFamily: root.uiFont
+            foreground: root.barForeground
+            enabled: root.savedToken() !== ""
+            onClicked: root.clearToken()
+          }
+        }
+        PlainText {
+          width: parent.width
+          visible: root.settingsMessage !== ""
+          text: root.settingsMessage
+          wrapMode: Text.WordWrap
+          color: root.barForeground
+          opacity: 0.72
+          font.family: root.uiFont
+          font.pixelSize: Style.font.bodySmall
+        }
+      }
+
+      MouseArea {
+        anchors.fill: parent
+        acceptedButtons: Qt.RightButton
+        z: 1
+        onPressed: root.settingsOpen = false
       }
     }
   }

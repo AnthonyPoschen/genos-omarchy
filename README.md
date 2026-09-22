@@ -33,6 +33,8 @@ Responses larger than 256 KiB are refused. A list of more than 64 servers is ref
 
 The first match wins:
 
+The bar widget saves the token you paste in its own settings. A command that does not pass that setting still checks, in order:
+
 1. `GENOS_TOKEN`, when it is set and not empty.
 2. A Secret Service item with service `genos` and attribute `host` or `username` equal to the API origin. The helper runs `/usr/bin/secret-tool lookup` with those attributes as separate arguments. The token is read from stdout, not from the command line.
 3. `$XDG_CONFIG_HOME/genos/credentials.json` (default `~/.config/genos/credentials.json`), and only when that file is mode `0600`. If it is group or world readable, the panel refuses it and tells you to `chmod 0600` it. The file looks like `{"hosts":{"https://origin":{"token":"..."}}}`.
