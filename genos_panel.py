@@ -667,21 +667,17 @@ def _token_from_lookup(raw: bytes) -> str | None:
 
 def keyring_lookup(origin: str, *, run: Callable[..., CommandResult] | None = None) -> str | None:
     runner = run_command if run is None else run
-    for attribute in ("host", "username"):
-        try:
-            result = runner(
-                [SECRET_TOOL, "lookup", "service", SERVICE_NAME, attribute, origin],
-                input_bytes=None,
-                timeout=10,
-            )
-        except (CredentialError, FileNotFoundError, OSError):
-            return None
-        if result.returncode != 0:
-            continue
-        token = _token_from_lookup(result.stdout)
-        if token:
-            return token
-    return None
+    try:
+        result = runner(
+            [SECRET_TOOL, "lookup", "service", SERVICE_NAME, "host", origin],
+            input_bytes=None,
+            timeout=10,
+        )
+    except (CredentialError, FileNotFoundError, OSError):
+        return None
+    if result.returncode != 0:
+        return None
+    return _token_from_lookup(result.stdout)
 
 
 def store_token(
@@ -935,22 +931,41 @@ def safe_verification_uri(origin: str, value: object) -> str:
 def _interpret_poll(status: int, data: bytes) -> tuple[str, str]:
     document = _json_object(data) if data else {}
     error = document.get("error")
-    if error in ("authorization_pending", "slow_down"):
-        return "pending", str(error)
-    if isinstance(error, str) and error != "":
+    if isinstance(error, dict):
+        code = error.get("code")
+        if code in ("authorization_pending", "slow_down"):
+            return "pending", str(code)
+        raise ProtocolError("device login was not approved")
+    if error is not None:
         raise ProtocolError("device login was not approved")
     if status != 200:
         raise ProtocolError("device login was not approved")
-    token = _pick(document, "token", "accessToken", "access_token")
+    token = document.get("token")
     if not isinstance(token, str):
         raise ProtocolError("token response did not include a token")
     _validate_token(token)
     return "ok", token
 
 
+def device_code_request(origin: str, machine_name: str) -> dict[str, str]:
+    machine = tooltip_text(machine_name, NAME_MAX).strip() or "unknown"
+    return {"clientName": "genos-omarchy", "machineName": machine, "host": canonical_origin(origin)}
+
+
+def approval_url(origin: str, verification_path: object) -> str:
+    if not isinstance(verification_path, str) or not verification_path.startswith("/account?"):
+        return ""
+    if "code=" not in verification_path or "://" in verification_path:
+        return ""
+    if any(char in verification_path for char in "\r\n\x00<>& ") or "genos_pat_" in verification_path or "genos_discord_" in verification_path:
+        return ""
+    return canonical_origin(origin) + verification_path
+
+
 def device_login(
     origin: str,
     *,
+    machine_name: str | None = None,
     transport: HttpTransport | None = None,
     store: Callable[[str, str], str] | None = None,
     sleep: Callable[[float], None] | None = None,
@@ -965,18 +980,30 @@ def device_login(
     now = time.monotonic if clock is None else clock
     saver = store or (lambda item, value: store_token(item, value))
     headers = {"Accept": "application/json", "Content-Type": "application/json", "User-Agent": "genos-omarchy/2026.9.22"}
-    status, data = client.request(checked, "POST", "/api/v1/auth/device/codes", headers, b"{}")
-    if status not in (200, 201):
+    machine = socket.gethostname() if machine_name is None else machine_name
+    start = device_code_request(checked, machine)
+    status, data = client.request(
+        checked,
+        "POST",
+        "/api/v1/auth/device/codes",
+        headers,
+        json.dumps(start, separators=(",", ":"), sort_keys=True).encode("utf-8"),
+    )
+    if status != 201:
         raise ProtocolError("device login could not start")
     document = _json_object(data)
-    device_code = _pick(document, "deviceCode", "device_code")
+    device_code = document.get("deviceCode")
     if not isinstance(device_code, str) or len(device_code) > 512 or any(char in device_code for char in "\r\n\x00"):
         raise ProtocolError("device code was invalid")
-    interval_value = _pick(document, "interval", "intervalSeconds")
-    expires_value = _pick(document, "expiresIn", "expires_in", "expiresInSeconds")
+    verification_path = document.get("verificationPath")
+    opened = approval_url(checked, verification_path)
+    if opened == "":
+        raise ProtocolError("approval path was invalid")
+    interval_value = document.get("interval")
+    expires_value = document.get("expiresIn")
     try:
-        interval = max(1, min(int(interval_value if interval_value is not None else 5), 30))
-        expires = max(1, min(int(expires_value if expires_value is not None else 600), max_wait))
+        interval = max(1, min(int(interval_value), 30))
+        expires = max(1, min(int(expires_value), max_wait))
     except (TypeError, ValueError):
         raise ProtocolError("device login timing was invalid") from None
     events: list[dict[str, object]] = []
@@ -990,11 +1017,9 @@ def device_login(
         {
             "event": "code",
             "origin": checked,
-            "userCode": _user_code(_pick(document, "userCode", "user_code")),
-            "verificationUri": safe_verification_uri(
-                checked,
-                _pick(document, "verificationUri", "verification_uri"),
-            ),
+            "userCode": _user_code(document.get("userCode")),
+            "verificationPath": verification_path,
+            "verificationUri": safe_verification_uri(checked, opened),
         }
     )
     deadline = now() + expires

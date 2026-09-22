@@ -220,7 +220,6 @@ class CredentialTests(unittest.TestCase):
             seen,
             [
                 ["/usr/bin/secret-tool", "lookup", "service", "genos", "host", ORIGIN],
-                ["/usr/bin/secret-tool", "lookup", "service", "genos", "username", ORIGIN],
             ],
         )
 
@@ -412,15 +411,14 @@ class FakeServerTests(unittest.TestCase):
                 body = self._read()
                 self._hit(body)
                 if self.path == "/api/v1/auth/device/codes":
-                    uri = f"http://127.0.0.1:{state['port']}/device"
                     self._send(
-                        200,
+                        201,
                         json.dumps(
                             {
                                 "deviceCode": "device-1",
                                 "userCode": "ABCD-EFGH",
-                                "verificationUri": uri,
-                                "interval": 0,
+                                "verificationPath": "/account?code=ABCD-EFGH",
+                                "interval": 1,
                                 "expiresIn": 30,
                             }
                         ).encode(),
@@ -429,7 +427,7 @@ class FakeServerTests(unittest.TestCase):
                 if self.path == "/api/v1/auth/device/tokens":
                     state["polls"] += 1
                     if state["polls"] == 1:
-                        self._send(400, b'{"error":"authorization_pending"}')
+                        self._send(400, b'{"error":{"code":"authorization_pending","message":"waiting"}}')
                     else:
                         self._send(200, b'{"token":"issued-token"}')
                     return
@@ -501,17 +499,36 @@ class FakeServerTests(unittest.TestCase):
             stored["token"] = token
             return "keyring"
 
-        events = panel.device_login(self.origin, transport=panel.HttpTransport(), store=store, sleep=lambda _seconds: None)
+        events = panel.device_login(
+            self.origin,
+            machine_name="panel-pc",
+            transport=panel.HttpTransport(),
+            store=store,
+            sleep=lambda _seconds: None,
+        )
         blob = json.dumps(events)
         self.assertNotIn("issued-token", blob)
         self.assertEqual(stored["token"], "issued-token")
         self.assertEqual(stored["origin"], self.origin)
         self.assertEqual(events[0]["userCode"], "ABCD-EFGH")
-        self.assertTrue(str(events[0]["verificationUri"]).startswith(self.origin))
+        self.assertEqual(events[0]["verificationPath"], "/account?code=ABCD-EFGH")
+        self.assertEqual(events[0]["verificationUri"], self.origin + "/account?code=ABCD-EFGH")
         self.assertEqual(self.state["polls"], 2)
+        start = json.loads(self.state["hits"][0]["body"])
+        self.assertEqual(
+            start,
+            {"clientName": "genos-omarchy", "host": self.origin, "machineName": "panel-pc"},
+        )
+        self.assertEqual(json.loads(self.state["hits"][1]["body"]), {"deviceCode": "device-1"})
         for hit in self.state["hits"]:
             self.assertIsNone(hit["authorization"])
             self.assertNotIn("genos", os.path.basename(hit["path"]))
+
+    def test_pending_poll_requires_nested_error_code(self):
+        kind, value = panel._interpret_poll(400, b'{"error":{"code":"authorization_pending","message":"waiting"}}')
+        self.assertEqual((kind, value), ("pending", "authorization_pending"))
+        with self.assertRaises(panel.ProtocolError):
+            panel._interpret_poll(400, b'{"error":"authorization_pending"}')
 
 
 if __name__ == "__main__":
