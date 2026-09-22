@@ -1,0 +1,19 @@
+{
+  "schemaVersion": 1,
+  "id": "io.github.anthonyposchen.genos",
+  "name": "Genos",
+  "version": "2026.9.22",
+  "author": "Anthony Poschen",
+  "description": "Start, stop, and restart your Genos game servers from the bar.",
+  "kinds": ["bar-widget"],
+  "entryPoints": {
+    "barWidget": "BarWidget.qml"
+  },
+  "barWidget": {
+    "displayName": "Genos",
+    "description": "Your Genos servers, with name, game, status, and start, stop, and restart.",
+    "category": "Info",
+    "defaultSection": "right",
+    "allowMultiple": false
+  }
+}
