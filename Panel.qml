@@ -171,17 +171,21 @@ Panel {
   function toggleSettings() { root.settingsOpen = !root.settingsOpen }
   function openSettings() { root.settingsOpen = true }
 
-  function submitToken() {
-    var value = String(tokenField.text || "").trim()
-    tokenField.text = ""
-    if (!value) {
-      root.status = "Paste a personal access token."
-      return
-    }
-    root.saveSetting("token", value)
-    root.needsLogin = false
-    root.status = ""
-    root.refresh()
+  function signIn() {
+    if (helper.running) return
+    root.userCode = ""
+    root.verificationUri = ""
+    root.loginSaved = false
+    root.status = "Opening Genos to sign in"
+    root.startHelper(["login"], false)
+  }
+
+  function openVerification() {
+    if (!root.allowedUri(root.verificationUri) || opener.running) return
+    opener.command = ["/usr/bin/xdg-open", "--", root.verificationUri]
+    opener.clearEnvironment = true
+    opener.environment = root.openerEnvironment()
+    opener.running = true
   }
 
   function saveOrigin() {
@@ -198,7 +202,6 @@ Panel {
 
   function clearToken() {
     root.saveSetting("token", "")
-    tokenField.text = ""
     settingsTokenField.text = ""
     root.servers = []
     root.runningCount = 0
@@ -313,15 +316,19 @@ Panel {
       root.loginOrigin = String(doc.origin || "")
       var uri = String(doc.verificationUri || "")
       root.verificationUri = root.allowedUri(uri) && root.uriMatchesOrigin(uri, root.loginOrigin) ? uri : ""
-      root.status = root.userCode.length > 0 ? "Approve " + root.userCode : "Approve the device login"
+      root.status = "Waiting for approval in the browser"
+      if (root.verificationUri !== "") root.openVerification()
+      return
+    }
+    if (doc.event === "session" && doc.token) {
+      root.saveSetting("token", String(doc.token))
+      root.loginSaved = true
+      root.needsLogin = false
+      root.status = "Signed in"
       return
     }
     if (doc.event === "stored" || (doc.ok === true && doc.stored)) {
       root.loginSaved = true
-      root.needsLogin = false
-      root.status = doc.where === "file" || doc.stored === "file"
-        ? "Saved the token in the credentials file because the keyring was unavailable."
-        : "Saved the token in the keyring."
       return
     }
     if (doc.needsConfirm === true) {
@@ -378,17 +385,14 @@ Panel {
       root.settingsOpen = false
       if (root.savedToken() === "") {
         root.needsLogin = true
-        root.status = ""
-        Qt.callLater(function() { tokenField.forceActiveFocus() })
+        root.status = "Authentication not configured"
       } else root.refresh()
     } else {
-      tokenField.text = ""
       root.pendingInput = ""
       root.stopHelper()
     }
   }
   Component.onDestruction: {
-    tokenField.text = ""
     root.stopHelper()
     root.scrubHelper()
   }
@@ -461,7 +465,7 @@ Panel {
     PanelKeyCatcher {
       id: catcher
       anchors.fill: parent
-      blocked: tokenField.activeFocus
+      blocked: false
       onCloseRequested: {
         if (root.confirmServerId !== "") root.clearConfirm()
         else root.close()
@@ -490,61 +494,42 @@ Panel {
             font.pixelSize: Style.font.title
             font.bold: true
           }
-          PlainText {
+          Column {
             width: parent.width
             visible: root.status !== ""
-            text: root.status
-            wrapMode: Text.WordWrap
-            color: root.barForeground
-            font.family: root.uiFont
-            font.pixelSize: Style.font.body
+            spacing: Style.space(2)
+            PlainText {
+              width: parent.width
+              text: "Status"
+              color: root.barForeground
+              opacity: 0.52
+              font.family: root.uiFont
+              font.pixelSize: Style.font.caption
+              font.bold: true
+              font.letterSpacing: 0.8
+            }
+            PlainText {
+              width: parent.width
+              text: root.status
+              wrapMode: Text.WordWrap
+              color: root.barForeground
+              opacity: 0.72
+              font.family: root.uiFont
+              font.pixelSize: Style.font.bodySmall
+            }
           }
 
           Column {
             width: parent.width
             visible: root.needsLogin
             spacing: Style.space(8)
-            PlainText {
-              width: parent.width
-              text: "Paste a personal access token. It is saved with this bar widget."
-              wrapMode: Text.WordWrap
-              color: root.barForeground
-              font.family: root.uiFont
-              font.pixelSize: Style.font.body
-            }
-            TextField {
-              id: tokenField
-              width: parent.width
-              password: true
-              maximumLength: 4096
-              placeholderText: "Personal access token"
-              font.family: root.uiFont
-              foreground: root.barForeground
-              onAccepted: root.submitToken()
-            }
             Button {
-              text: "Save token"
+              text: helper.running && root.operation === "login" ? "Signing in…" : "Sign in"
               bordered: true
               fontFamily: root.uiFont
               foreground: root.barForeground
-              enabled: !helper.running
-              onClicked: root.submitToken()
-            }
-            Button {
-              text: "Create a token"
-              bordered: true
-              fontFamily: root.uiFont
-              foreground: root.barForeground
-              onClicked: root.openAccount()
-            }
-            PlainText {
-              width: parent.width
-              text: "Opens the account page so you can create a token, then paste it here."
-              wrapMode: Text.WordWrap
-              color: root.barForeground
-              opacity: 0.62
-              font.family: root.uiFont
-              font.pixelSize: Style.font.bodySmall
+              enabled: !(helper.running && root.operation === "login")
+              onClicked: root.signIn()
             }
           }
 

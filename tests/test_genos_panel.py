@@ -172,7 +172,7 @@ class CredentialTests(unittest.TestCase):
         self.assertEqual((resolved.source, resolved.token), ("settings", "settings-token"))
         with self.assertRaises(panel.CredentialError) as caught:
             panel.resolve_credential(ORIGIN, settings_token="  ")
-        self.assertIn("Paste a personal access token", str(caught.exception))
+        self.assertIn("Authentication not configured", str(caught.exception))
         origin, token = panel.parse_settings_payload(b'{"origin":"https://genosservers.com","token":"pasted"}\n')
         self.assertEqual(origin, "https://genosservers.com")
         self.assertEqual(token, "pasted")
@@ -517,13 +517,20 @@ class FakeServerTests(unittest.TestCase):
             stored["token"] = token
             return "keyring"
 
+        approved = {}
+
+        def on_approved(token):
+            approved["token"] = token
+
         events = panel.device_login(
             self.origin,
             machine_name="panel-pc",
             transport=panel.HttpTransport(),
             store=store,
             sleep=lambda _seconds: None,
+            on_approved=on_approved,
         )
+        self.assertEqual(approved["token"], "issued-token")
         blob = json.dumps(events)
         self.assertNotIn("issued-token", blob)
         self.assertEqual(stored["token"], "issued-token")

@@ -318,7 +318,7 @@ def resolve_credential(
     if settings_token is not None:
         token = settings_token.strip()
         if token == "":
-            raise CredentialError("Paste a personal access token.")
+            raise CredentialError("Authentication not configured.")
         _validate_token(token)
         return Resolved(token, "settings")
     env = os.environ if environ is None else environ
@@ -338,7 +338,7 @@ def resolve_credential(
     if found:
         _validate_token(found)
         return Resolved(found, "file")
-    raise CredentialError("Paste a personal access token.")
+    raise CredentialError("Authentication not configured.")
 
 
 def _path_parts(path: str) -> list[str]:
@@ -983,6 +983,7 @@ def device_login(
     sleep: Callable[[float], None] | None = None,
     clock: Callable[[], float] | None = None,
     emit: Callable[[dict[str, object]], None] | None = None,
+    on_approved: Callable[[str], None] | None = None,
     max_wait: int = 900,
     max_polls: int = 200,
 ) -> list[dict[str, object]]:
@@ -1048,6 +1049,8 @@ def device_login(
                 interval = min(interval + 5, 30)
             continue
         where = saver(checked, value)
+        if on_approved is not None:
+            on_approved(value)
         publish({"event": "stored", "where": where})
         return events
     raise ProtocolError("device login expired")
@@ -1195,7 +1198,10 @@ def _public_message(exc: BaseException) -> str:
 
 
 def do_login() -> None:
-    device_login(resolve_origin(), emit=lambda event: emit(_scrub(event, "")))
+    def reveal(token: str) -> None:
+        emit({"event": "session", "token": token})
+
+    device_login(panel_origin(None), on_approved=reveal, emit=lambda event: emit(_scrub(event, "")))
 
 
 def main(argv: list[str] | None = None) -> int:
