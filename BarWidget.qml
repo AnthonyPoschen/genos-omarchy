@@ -38,16 +38,31 @@ BarWidget {
     onLoaded: { root.injectPanel(); Qt.callLater(root.injectPanel) }
   }
 
-  WidgetButton {
+  BarIconButton {
     id: button
     anchors.fill: parent
     bar: root.bar
-    text: root.runningCount > 0 ? "Genos " + root.runningCount : "Genos"
-    tooltipText: "Left-click servers · right-click settings"
+    iconComponent: logoMark
+    active: root.opened || root.runningCount > 0
+    useActiveColor: false
+    tooltipText: root.runningCount > 0
+      ? ("Genos · " + root.runningCount + (root.runningCount === 1 ? " server running" : " servers running") + "\nLeft-click servers · right-click settings")
+      : "Genos\nLeft-click servers · right-click settings"
     onPressed: function(pressedButton) {
       if (pressedButton === Qt.MiddleButton) root.refresh()
       else if (pressedButton === Qt.RightButton) root.toggleSettings()
       else root.togglePanel()
+    }
+  }
+
+  Component {
+    id: logoMark
+    Image {
+      anchors.fill: parent
+      source: Qt.resolvedUrl("assets/genos-logo.webp")
+      fillMode: Image.PreserveAspectFit
+      smooth: true
+      mipmap: true
     }
   }
 }
