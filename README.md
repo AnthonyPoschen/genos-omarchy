@@ -36,7 +36,7 @@ The first match wins:
 The bar widget saves the token you paste in its own settings. A command that does not pass that setting still checks, in order:
 
 1. `GENOS_TOKEN`, when it is set and not empty.
-2. A Secret Service item with service `genos` and attribute `host` or `username` equal to the API origin. The helper runs `/usr/bin/secret-tool lookup` with those attributes as separate arguments. The token is read from stdout, not from the command line.
+2. A Secret Service item with service `genos` and attribute `host` equal to the API origin. The helper runs `/usr/bin/secret-tool lookup service genos host <origin>`. The token is read from stdout, not from the command line. The `username` attribute is not used.
 3. `$XDG_CONFIG_HOME/genos/credentials.json` (default `~/.config/genos/credentials.json`), and only when that file is mode `0600`. If it is group or world readable, the panel refuses it and tells you to `chmod 0600` it. The file looks like `{"hosts":{"https://origin":{"token":"..."}}}`.
 
 `~/.config/genos/local.env` is not read. A token is not passed on a command line, written into the log, or kept on a QML property after the request finishes.
@@ -52,6 +52,6 @@ omarchy plugin remove io.github.anthonyposchen.genos
 Removing the plugin does not delete credentials. These stay:
 
 - the credentials file, `$XDG_CONFIG_HOME/genos/credentials.json` (default `~/.config/genos/credentials.json`), if it exists
-- the Secret Service item for service `genos` whose `host` or `username` attribute is the API origin, if it exists
+- the Secret Service item for service `genos` whose `host` attribute is the API origin, if it exists
 
 `config.toml` in that directory is also left in place. The plugin reads it and does not own it. Nothing else is written: no cache, no service, and no Discord credentials.
