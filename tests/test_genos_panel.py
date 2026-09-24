@@ -509,6 +509,17 @@ class FakeServerTests(unittest.TestCase):
         self.assertTrue(post["idempotency"])
         self.assertNotIn(b"sekret-value", post["body"])
 
+    def test_device_login_404_points_at_pat_connect(self):
+        class NotFoundTransport:
+            def request(self, origin, method, path, headers, body=None):
+                return 404, b'{"error":{"code":"not_found","message":"API route was not found"}}'
+
+        with self.assertRaises(panel.ProtocolError) as raised:
+            panel.device_login("https://example.test", transport=NotFoundTransport(), store=lambda o, t: "file")
+        message = str(raised.exception)
+        self.assertIn("upcoming Genos API", message)
+        self.assertIn("Connect", message)
+
     def test_device_login_polls_and_stores_without_leaking_the_token(self):
         stored = {}
 
