@@ -1002,6 +1002,10 @@ def device_login(
         headers,
         json.dumps(start, separators=(",", ":"), sort_keys=True).encode("utf-8"),
     )
+    if status == 404:
+        raise ProtocolError(
+            "Device login requires an upcoming Genos API. Paste a personal access token and use Connect instead."
+        )
     if status != 201:
         raise ProtocolError("device login could not start")
     document = _json_object(data)
