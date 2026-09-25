@@ -36,7 +36,18 @@ MENU_FIELDS = (
     "restartNeedsConfirm",
     "confirmStop",
     "confirmRestart",
+    "selectedSetupID",
+    "selectedSetupName",
+    "canChangeProfile",
 )
+SETUP_FIELDS = (
+    "id",
+    "name",
+    "gameName",
+    "selected",
+)
+SETUP_MAX = 64
+STOPPED_STATUS = "Stopped"
 LOOPBACK_HOSTS = frozenset({"localhost", "127.0.0.1", "genos.localhost"})
 DEFAULT_ORIGIN = "https://genosservers.com"
 BODY_MAX = 262144
@@ -181,11 +192,24 @@ def parse_menu(document: object) -> list[dict[str, object]]:
             player_value = metrics.get("playerCount")
         name = display_text(entry.get("name"), NAME_MAX) or "server"
         updates = _string_list(entry.get("notableUpdates"), UPDATES_MAX, UPDATE_MAX)
+        selected_setup_id = entry.get("selectedSetupID", "")
+        if selected_setup_id is None:
+            selected_setup_id = ""
+        if not isinstance(selected_setup_id, str):
+            raise ParseError("selectedSetupID is invalid")
+        if selected_setup_id != "" and _ID_RE.fullmatch(selected_setup_id) is None:
+            raise ParseError("selectedSetupID is invalid")
+        selected_setup_name = entry.get("selectedSetupName", "")
+        if selected_setup_name is None:
+            selected_setup_name = ""
+        if not isinstance(selected_setup_name, str):
+            raise ParseError("selectedSetupName is invalid")
+        status_text = display_text(status, TEXT_MAX)
         row = {
             "id": server_id,
             "name": name,
             "gameName": display_text(game.get("name", ""), NAME_MAX),
-            "status": display_text(status, TEXT_MAX),
+            "status": status_text,
             "playerCount": _whole_number(player_value, "playerCount"),
             "notableUpdates": updates,
             "actions": actions_for_server(entry),
@@ -193,6 +217,9 @@ def parse_menu(document: object) -> list[dict[str, object]]:
             "restartNeedsConfirm": False,
             "confirmStop": "",
             "confirmRestart": "",
+            "selectedSetupID": selected_setup_id,
+            "selectedSetupName": display_text(selected_setup_name, NAME_MAX),
+            "canChangeProfile": status_text == STOPPED_STATUS,
         }
         row["restartNeedsConfirm"] = needs_confirmation("restart", row)
         row["confirmStop"] = confirm_message("stop", row)
@@ -730,12 +757,24 @@ def _redact(text: str, token: str) -> str:
 
 def _response_message(status: int, data: bytes, token: str) -> str:
     message = f"request failed ({status})"
+    code = ""
     try:
         document = json.loads(data.decode("utf-8"))
     except (UnicodeError, json.JSONDecodeError):
         document = None
-    if isinstance(document, dict) and isinstance(document.get("message"), str):
-        message = document["message"][:180]
+    if isinstance(document, dict):
+        error = document.get("error")
+        if isinstance(error, dict):
+            raw_code = error.get("code")
+            raw_message = error.get("message")
+            if isinstance(raw_code, str):
+                code = raw_code.strip()[:80]
+            if isinstance(raw_message, str) and raw_message.strip():
+                message = raw_message[:180]
+        elif isinstance(document.get("message"), str):
+            message = document["message"][:180]
+    if code and code not in message:
+        message = f"{code}: {message}"
     return tooltip_text(_redact(message, token), 180) or "request failed"
 
 
@@ -889,6 +928,244 @@ def do_action(
         {"ok": True, "action": action, "serverId": server_id, "status": status},
         credential.token,
     )
+
+
+def validate_setup_id(setup_id: str) -> None:
+    if not isinstance(setup_id, str) or _ID_RE.fullmatch(setup_id) is None:
+        raise ProtocolError("setup id is invalid")
+
+
+def parse_setups(document: object) -> tuple[list[dict[str, object]], str]:
+    if not isinstance(document, dict) or not isinstance(document.get("setups"), list):
+        raise ParseError("setup list is invalid")
+    setups = document["setups"]
+    if len(setups) > SETUP_MAX:
+        raise ParseError("setup list is too long")
+    selected = document.get("selectedSetupID", "")
+    if selected is None:
+        selected = ""
+    if not isinstance(selected, str):
+        raise ParseError("selectedSetupID is invalid")
+    if selected != "" and _ID_RE.fullmatch(selected) is None:
+        raise ParseError("selectedSetupID is invalid")
+    rows: list[dict[str, object]] = []
+    for entry in setups:
+        if not isinstance(entry, dict):
+            raise ParseError("setup list is invalid")
+        setup_id = entry.get("id")
+        if not isinstance(setup_id, str) or _ID_RE.fullmatch(setup_id) is None:
+            raise ParseError("setup id is invalid")
+        if not isinstance(entry.get("name"), str):
+            raise ParseError("setup name is invalid")
+        game = entry.get("game", {})
+        if game is None:
+            game = {}
+        if not isinstance(game, dict) or not isinstance(game.get("name", ""), str):
+            raise ParseError("game name is invalid")
+        name = display_text(entry.get("name"), NAME_MAX) or "profile"
+        row = {
+            "id": setup_id,
+            "name": name,
+            "gameName": display_text(game.get("name", ""), NAME_MAX),
+            "selected": setup_id == selected,
+        }
+        rows.append({key: row[key] for key in SETUP_FIELDS})
+    return rows, selected
+
+
+def fetch_setups(origin: str, token: str, server_id: str, transport: HttpTransport) -> tuple[list[dict[str, object]], str]:
+    validate_server_id(server_id)
+    path = "/api/v1/servers/" + quote(server_id, safe="") + "/setups"
+    status, data = transport.request(origin, "GET", path, _auth_headers(token), None)
+    if status in (401, 403):
+        raise CredentialError("That token was not accepted.")
+    if status != 200:
+        raise ProtocolError(_response_message(status, data, token))
+    try:
+        return parse_setups(_json_object(data))
+    except ParseError as exc:
+        raise ParseError(_redact(str(exc), token)) from None
+
+
+def put_selected_setup(
+    origin: str,
+    token: str,
+    server_id: str,
+    setup_id: str,
+    expected_selected_setup_id: str | None,
+    transport: HttpTransport,
+) -> tuple[int, dict[str, object]]:
+    validate_server_id(server_id)
+    validate_setup_id(setup_id)
+    body_obj: dict[str, object] = {"setupID": setup_id, "expectedSelectedSetupID": expected_selected_setup_id or ""}
+    body = json.dumps(body_obj, separators=(",", ":")).encode("utf-8")
+    headers = _auth_headers(token, {"Content-Type": "application/json"})
+    path = "/api/v1/servers/" + quote(server_id, safe="") + "/selected-setup"
+    status, data = transport.request(origin, "PUT", path, headers, body)
+    if status in (401, 403):
+        raise CredentialError("That token was not accepted.")
+    if status < 200 or status >= 300:
+        raise ProtocolError(_response_message(status, data, token))
+    return status, _json_object(data) if data else {}
+
+
+def delete_selected_setup(
+    origin: str,
+    token: str,
+    server_id: str,
+    expected_selected_setup_id: str | None,
+    transport: HttpTransport,
+) -> tuple[int, dict[str, object]]:
+    validate_server_id(server_id)
+    body_obj: dict[str, object] = {"expectedSelectedSetupID": expected_selected_setup_id or ""}
+    body = json.dumps(body_obj, separators=(",", ":")).encode("utf-8")
+    headers = _auth_headers(token, {"Content-Type": "application/json"})
+    path = "/api/v1/servers/" + quote(server_id, safe="") + "/selected-setup"
+    status, data = transport.request(origin, "DELETE", path, headers, body)
+    if status in (401, 403):
+        raise CredentialError("That token was not accepted.")
+    if status < 200 or status >= 300:
+        raise ProtocolError(_response_message(status, data, token))
+    return status, _json_object(data) if data else {}
+
+
+def _menu_row(origin: str, token: str, server_id: str, transport: HttpTransport) -> dict[str, object]:
+    row = next((item for item in fetch_menu(origin, token, transport) if item["id"] == server_id), None)
+    if row is None:
+        raise ProtocolError("server is not in the menu")
+    return row
+
+
+def _refuse_unless_stopped(row: Mapping[str, object]) -> None:
+    if row.get("status") != STOPPED_STATUS:
+        raise ProtocolError("server must be Stopped before changing profile")
+
+
+def confirm_profile_message(action: str, server: Mapping[str, object], setup_name: str = "") -> str:
+    name = tooltip_text(server.get("name") or "") or "this server"
+    if action == "select-setup":
+        profile = tooltip_text(setup_name or "this profile") or "this profile"
+        return f"Select {profile} on {name}?"
+    if action == "unload-setup":
+        return f"Unload profile on {name}?"
+    return ""
+
+
+def do_setups(
+    server_id: str,
+    *,
+    origin: str | None = None,
+    credential: Resolved | None = None,
+    transport: HttpTransport | None = None,
+) -> dict[str, object]:
+    validate_server_id(server_id)
+    if origin is None:
+        origin = resolve_origin()
+    if credential is None:
+        credential = resolve_credential(origin)
+    client = transport or HttpTransport()
+    rows, selected = fetch_setups(origin, credential.token, server_id, client)
+    return _scrub(
+        {
+            "ok": True,
+            "serverId": server_id,
+            "selectedSetupID": selected,
+            "setups": rows,
+        },
+        credential.token,
+    )
+
+
+def do_select_setup(
+    server_id: str,
+    setup_id: str,
+    confirmed: bool = False,
+    *,
+    expected: str | None = None,
+    origin: str | None = None,
+    credential: Resolved | None = None,
+    transport: HttpTransport | None = None,
+    menu_row: Mapping[str, object] | None = None,
+) -> dict[str, object]:
+    validate_server_id(server_id)
+    validate_setup_id(setup_id)
+    if expected is not None and expected != "":
+        validate_setup_id(expected)
+    if origin is None:
+        origin = resolve_origin()
+    if credential is None:
+        credential = resolve_credential(origin)
+    client = transport or HttpTransport()
+    row = dict(menu_row) if menu_row is not None else _menu_row(origin, credential.token, server_id, client)
+    _refuse_unless_stopped(row)
+    if not confirmed:
+        setup_name = str((menu_row or {}).get("setupName") or "")
+        if not setup_name:
+            try:
+                setups, _selected = fetch_setups(origin, credential.token, server_id, client)
+                match = next((item for item in setups if item["id"] == setup_id), None)
+                if match is not None:
+                    setup_name = str(match.get("name") or "")
+            except PanelError:
+                setup_name = setup_id
+        raise ConfirmRequired(
+            "select-setup",
+            server_id,
+            confirm_profile_message("select-setup", row, setup_name or setup_id),
+        )
+    expected_value = expected if expected is not None else str(row.get("selectedSetupID") or "")
+    status, data = put_selected_setup(origin, credential.token, server_id, setup_id, expected_value, client)
+    selected_name = ""
+    server = data.get("server") if isinstance(data, dict) else None
+    if isinstance(server, dict) and isinstance(server.get("selectedSetupName"), str):
+        selected_name = display_text(server.get("selectedSetupName"), NAME_MAX)
+    return _scrub(
+        {
+            "ok": True,
+            "action": "select-setup",
+            "serverId": server_id,
+            "setupId": setup_id,
+            "selectedSetupName": selected_name,
+            "status": status,
+        },
+        credential.token,
+    )
+
+
+def do_unload_setup(
+    server_id: str,
+    confirmed: bool = False,
+    *,
+    expected: str | None = None,
+    origin: str | None = None,
+    credential: Resolved | None = None,
+    transport: HttpTransport | None = None,
+    menu_row: Mapping[str, object] | None = None,
+) -> dict[str, object]:
+    validate_server_id(server_id)
+    if expected is not None and expected != "":
+        validate_setup_id(expected)
+    if origin is None:
+        origin = resolve_origin()
+    if credential is None:
+        credential = resolve_credential(origin)
+    client = transport or HttpTransport()
+    row = dict(menu_row) if menu_row is not None else _menu_row(origin, credential.token, server_id, client)
+    _refuse_unless_stopped(row)
+    if not confirmed:
+        raise ConfirmRequired("unload-setup", server_id, confirm_profile_message("unload-setup", row))
+    expected_value = expected if expected is not None else str(row.get("selectedSetupID") or "")
+    status, _data = delete_selected_setup(origin, credential.token, server_id, expected_value, client)
+    return _scrub(
+        {
+            "ok": True,
+            "action": "unload-setup",
+            "serverId": server_id,
+            "status": status,
+        },
+        credential.token,
+    )
+
 
 
 def _pick(document: Mapping[str, object], *keys: str) -> object:
@@ -1174,11 +1451,18 @@ def panel_origin(explicit: str | None, environ: Mapping[str, str] | None = None)
     return DEFAULT_ORIGIN
 
 
+def _parse_confirm_flag(arg: str) -> bool | None:
+    if arg in ("--confirm", "--confirmed"):
+        return True
+    return None
+
+
 def parse_action_args(argv: list[str]) -> tuple[str, str, bool]:
     confirmed = False
     parts: list[str] = []
     for arg in argv:
-        if arg == "--confirmed":
+        flag = _parse_confirm_flag(arg)
+        if flag is True:
             confirmed = True
         elif arg.startswith("-"):
             raise ProtocolError("unknown option")
@@ -1187,6 +1471,73 @@ def parse_action_args(argv: list[str]) -> tuple[str, str, bool]:
     if len(parts) != 2:
         raise ProtocolError("usage: action <id> <start|stop|restart>")
     return parts[0], parts[1], confirmed
+
+
+def parse_setups_args(argv: list[str]) -> str:
+    parts: list[str] = []
+    for arg in argv:
+        if arg.startswith("-"):
+            raise ProtocolError("unknown option")
+        parts.append(arg)
+    if len(parts) != 1:
+        raise ProtocolError("usage: setups <serverID>")
+    return parts[0]
+
+
+def parse_select_setup_args(argv: list[str]) -> tuple[str, str, bool, str | None]:
+    confirmed = False
+    expected: str | None = None
+    parts: list[str] = []
+    index = 0
+    while index < len(argv):
+        arg = argv[index]
+        flag = _parse_confirm_flag(arg)
+        if flag is True:
+            confirmed = True
+            index += 1
+            continue
+        if arg == "--expected":
+            index += 1
+            if index >= len(argv):
+                raise ProtocolError("usage: select-setup <serverID> <setupID> [--expected <id>] [--confirm]")
+            expected = argv[index]
+            index += 1
+            continue
+        if arg.startswith("-"):
+            raise ProtocolError("unknown option")
+        parts.append(arg)
+        index += 1
+    if len(parts) != 2:
+        raise ProtocolError("usage: select-setup <serverID> <setupID> [--expected <id>] [--confirm]")
+    return parts[0], parts[1], confirmed, expected
+
+
+def parse_unload_setup_args(argv: list[str]) -> tuple[str, bool, str | None]:
+    confirmed = False
+    expected: str | None = None
+    parts: list[str] = []
+    index = 0
+    while index < len(argv):
+        arg = argv[index]
+        flag = _parse_confirm_flag(arg)
+        if flag is True:
+            confirmed = True
+            index += 1
+            continue
+        if arg == "--expected":
+            index += 1
+            if index >= len(argv):
+                raise ProtocolError("usage: unload-setup <serverID> [--expected <id>] [--confirm]")
+            expected = argv[index]
+            index += 1
+            continue
+        if arg.startswith("-"):
+            raise ProtocolError("unknown option")
+        parts.append(arg)
+        index += 1
+    if len(parts) != 1:
+        raise ProtocolError("usage: unload-setup <serverID> [--expected <id>] [--confirm]")
+    return parts[0], confirmed, expected
 
 
 def emit(payload: Mapping[str, object]) -> None:
@@ -1212,7 +1563,7 @@ def main(argv: list[str] | None = None) -> int:
     args = list(sys.argv[1:] if argv is None else argv)
     try:
         if not args or args[0] in ("-h", "--help"):
-            emit({"ok": False, "error": "usage", "message": "usage: list | action | login | connect"})
+            emit({"ok": False, "error": "usage", "message": "usage: list | action | setups | select-setup | unload-setup | login | connect"})
             return 2
         command = args[0]
         from_stdin = "--from-stdin" in args[1:]
@@ -1230,6 +1581,65 @@ def main(argv: list[str] | None = None) -> int:
             credential = resolve_credential(origin, settings_token=settings_token) if from_stdin else resolve_credential(origin)
             try:
                 emit(do_action(server_id, action, confirmed, origin=origin, credential=credential))
+            except ConfirmRequired as exc:
+                emit(
+                    {
+                        "ok": False,
+                        "needsConfirm": True,
+                        "action": exc.action,
+                        "serverId": exc.server_id,
+                        "message": exc.message,
+                    }
+                )
+        elif command == "setups":
+            server_id = parse_setups_args([arg for arg in args[1:] if arg != "--from-stdin"])
+            origin = panel_origin(settings_origin)
+            credential = resolve_credential(origin, settings_token=settings_token) if from_stdin else resolve_credential(origin)
+            emit(do_setups(server_id, origin=origin, credential=credential))
+        elif command == "select-setup":
+            server_id, setup_id, confirmed, expected = parse_select_setup_args(
+                [arg for arg in args[1:] if arg != "--from-stdin"]
+            )
+            origin = panel_origin(settings_origin)
+            credential = resolve_credential(origin, settings_token=settings_token) if from_stdin else resolve_credential(origin)
+            try:
+                emit(
+                    do_select_setup(
+                        server_id,
+                        setup_id,
+                        confirmed,
+                        expected=expected,
+                        origin=origin,
+                        credential=credential,
+                    )
+                )
+            except ConfirmRequired as exc:
+                emit(
+                    {
+                        "ok": False,
+                        "needsConfirm": True,
+                        "action": exc.action,
+                        "serverId": exc.server_id,
+                        "setupId": setup_id,
+                        "message": exc.message,
+                    }
+                )
+        elif command == "unload-setup":
+            server_id, confirmed, expected = parse_unload_setup_args(
+                [arg for arg in args[1:] if arg != "--from-stdin"]
+            )
+            origin = panel_origin(settings_origin)
+            credential = resolve_credential(origin, settings_token=settings_token) if from_stdin else resolve_credential(origin)
+            try:
+                emit(
+                    do_unload_setup(
+                        server_id,
+                        confirmed,
+                        expected=expected,
+                        origin=origin,
+                        credential=credential,
+                    )
+                )
             except ConfirmRequired as exc:
                 emit(
                     {

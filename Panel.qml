@@ -29,6 +29,10 @@ Panel {
   property string confirmAction: ""
   property string confirmActionLabel: ""
   property string confirmMessage: ""
+  property string confirmSetupId: ""
+  property string profileServerId: ""
+  property var profileSetups: []
+  property string profileSelectedSetupId: ""
   property string pendingInput: ""
   property string stdoutPending: ""
   property string stderrText: ""
@@ -224,12 +228,29 @@ Panel {
     root.confirmAction = ""
     root.confirmActionLabel = ""
     root.confirmMessage = ""
+    root.confirmSetupId = ""
+  }
+
+  function clearProfileChooser() {
+    root.profileServerId = ""
+    root.profileSetups = []
+    root.profileSelectedSetupId = ""
+  }
+
+  function serverById(serverId) {
+    var id = root.safeId(serverId)
+    if (id === "" || !root.servers) return null
+    for (var i = 0; i < root.servers.length && i < 64; i++) {
+      if (root.servers[i] && root.servers[i].id === id) return root.servers[i]
+    }
+    return null
   }
 
   function requestAction(row, action) {
     if (!row || (action !== "start" && action !== "stop" && action !== "restart")) return
     var serverId = root.safeId(row.id)
     if (serverId === "") return
+    root.clearProfileChooser()
     var ask = action === "stop" || (action === "restart" && row.restartNeedsConfirm === true)
     if (ask) {
       root.confirmServerId = serverId
@@ -242,12 +263,71 @@ Panel {
     root.commitAction(serverId, action, false)
   }
 
+  function requestChangeProfile(row) {
+    if (!row) return
+    var serverId = root.safeId(row.id)
+    if (serverId === "") return
+    if (String(row.status || "") !== "Stopped") {
+      root.status = "Stop the server before changing profile"
+      return
+    }
+    root.clearConfirm()
+    root.clearProfileChooser()
+    root.status = ""
+    root.startHelper(["setups", serverId, "--from-stdin"], true)
+  }
+
+  function requestSelectSetup(row, setup) {
+    if (!row || !setup) return
+    var serverId = root.safeId(row.id)
+    var setupId = root.safeId(setup.id)
+    if (serverId === "" || setupId === "") return
+    if (String(row.status || "") !== "Stopped") {
+      root.status = "Stop the server before changing profile"
+      return
+    }
+    root.confirmServerId = serverId
+    root.confirmAction = "select-setup"
+    root.confirmSetupId = setupId
+    root.confirmActionLabel = "Select"
+    var profile = root.tooltipPlain(setup.name || "this profile")
+    var serverName = root.tooltipPlain(row.tooltip || row.name || "this server")
+    root.confirmMessage = root.tooltipPlain("Select " + profile + " on " + serverName + "?")
+  }
+
+  function requestUnloadSetup(row) {
+    if (!row) return
+    var serverId = root.safeId(row.id)
+    if (serverId === "") return
+    if (String(row.status || "") !== "Stopped") {
+      root.status = "Stop the server before changing profile"
+      return
+    }
+    root.confirmServerId = serverId
+    root.confirmAction = "unload-setup"
+    root.confirmSetupId = ""
+    root.confirmActionLabel = "Unload"
+    var serverName = root.tooltipPlain(row.tooltip || row.name || "this server")
+    root.confirmMessage = root.tooltipPlain("Unload profile on " + serverName + "?")
+  }
+
   function commitConfirm() {
     var serverId = root.safeId(root.confirmServerId)
-    var action = root.confirmAction === "restart" ? "restart" : "stop"
+    var action = root.confirmAction
+    var setupId = root.safeId(root.confirmSetupId)
     root.clearConfirm()
     if (serverId === "") return
-    root.commitAction(serverId, action, true)
+    if (action === "select-setup") {
+      if (setupId === "") return
+      root.commitSelectSetup(serverId, setupId, true)
+      return
+    }
+    if (action === "unload-setup") {
+      root.commitUnloadSetup(serverId, true)
+      return
+    }
+    var lifecycle = action === "restart" ? "restart" : "stop"
+    root.commitAction(serverId, lifecycle, true)
   }
 
   function commitAction(serverId, action, confirmed) {
@@ -259,11 +339,39 @@ Panel {
     root.startHelper(args, true)
   }
 
+  function commitSelectSetup(serverId, setupId, confirmed) {
+    if (root.safeId(serverId) === "" || root.safeId(setupId) === "") return
+    var args = ["select-setup", serverId, setupId]
+    var expected = root.safeId(root.profileSelectedSetupId)
+    if (expected !== "") {
+      args.push("--expected")
+      args.push(expected)
+    }
+    if (confirmed) args.push("--confirmed")
+    root.actionSaved = false
+    root.startHelper(args, true)
+  }
+
+  function commitUnloadSetup(serverId, confirmed) {
+    if (root.safeId(serverId) === "") return
+    var args = ["unload-setup", serverId]
+    var expected = root.safeId(root.profileSelectedSetupId)
+    if (expected !== "") {
+      args.push("--expected")
+      args.push(expected)
+    }
+    if (confirmed) args.push("--confirmed")
+    root.actionSaved = false
+    root.startHelper(args, true)
+  }
+
   function detail(row) {
     var game = String(row.gameName || "")
     var state = String(row.status || "")
+    var profile = String(row.selectedSetupName || "")
     var text = game
     if (state.length > 0) text = text.length > 0 ? text + " · " + state : state
+    if (profile.length > 0) text = text.length > 0 ? text + " · " + profile : profile
     if (typeof row.playerCount === "number" && isFinite(row.playerCount)) {
       text += (text.length > 0 ? " · " : "") + row.playerCount + (row.playerCount === 1 ? " player" : " players")
     }
@@ -333,8 +441,19 @@ Panel {
     }
     if (doc.needsConfirm === true) {
       root.confirmServerId = root.safeId(doc.serverId)
-      root.confirmAction = doc.action === "restart" ? "restart" : "stop"
-      root.confirmActionLabel = root.confirmAction === "restart" ? "Restart" : "Stop"
+      if (doc.action === "select-setup") {
+        root.confirmAction = "select-setup"
+        root.confirmActionLabel = "Select"
+        root.confirmSetupId = root.safeId(doc.setupId)
+      } else if (doc.action === "unload-setup") {
+        root.confirmAction = "unload-setup"
+        root.confirmActionLabel = "Unload"
+        root.confirmSetupId = ""
+      } else {
+        root.confirmAction = doc.action === "restart" ? "restart" : "stop"
+        root.confirmActionLabel = root.confirmAction === "restart" ? "Restart" : "Stop"
+        root.confirmSetupId = ""
+      }
       root.confirmMessage = root.tooltipPlain(doc.message)
       root.status = ""
       return
@@ -346,6 +465,13 @@ Panel {
         if (rows[i] && rows[i].id === root.confirmServerId) keep = true
       }
       if (!keep) root.clearConfirm()
+      if (root.profileServerId !== "") {
+        var keepProfile = false
+        for (var j = 0; j < rows.length; j++) {
+          if (rows[j] && rows[j].id === root.profileServerId && rows[j].status === "Stopped") keepProfile = true
+        }
+        if (!keepProfile) root.clearProfileChooser()
+      }
       root.servers = rows
       root.runningCount = root.countRunning(rows)
       root.needsLogin = false
@@ -353,9 +479,23 @@ Panel {
       root.status = rows.length === 0 ? "No servers on this account." : ""
       return
     }
+    if (doc.ok === true && doc.setups !== undefined) {
+      root.profileServerId = root.safeId(doc.serverId)
+      root.profileSetups = Array.isArray(doc.setups) ? doc.setups.slice(0, 64) : []
+      root.profileSelectedSetupId = root.safeId(doc.selectedSetupID)
+      root.status = root.profileSetups.length === 0 ? "No profiles on this server." : ""
+      return
+    }
     if (doc.ok === true && (doc.action === "start" || doc.action === "stop" || doc.action === "restart")) {
       root.actionSaved = true
       root.status = "Requested " + doc.action
+      return
+    }
+    if (doc.ok === true && (doc.action === "select-setup" || doc.action === "unload-setup")) {
+      root.actionSaved = true
+      root.clearProfileChooser()
+      root.clearConfirm()
+      root.status = doc.action === "unload-setup" ? "Unloaded profile" : "Selected profile"
       return
     }
     if (doc.ok === false || doc.error) {
@@ -363,6 +503,7 @@ Panel {
         root.needsLogin = true
         root.servers = []
         root.runningCount = 0
+        root.clearProfileChooser()
       }
       root.status = root.tooltipPlain(doc.message || "Request failed")
     }
@@ -425,7 +566,7 @@ Panel {
     workingDirectory: String(Quickshell.env("HOME") || "/")
     environment: ({ "PATH": "/usr/bin" })
     onStarted: {
-      if (root.pendingInput.length > 0 && (root.operation === "list" || root.operation === "action")) {
+      if (root.pendingInput.length > 0 && (root.operation === "list" || root.operation === "action" || root.operation === "setups" || root.operation === "select-setup" || root.operation === "unload-setup")) {
         var chunk = root.pendingInput
         root.pendingInput = ""
         helper.write(chunk + "\n")
@@ -468,6 +609,7 @@ Panel {
       blocked: false
       onCloseRequested: {
         if (root.confirmServerId !== "") root.clearConfirm()
+        else if (root.profileServerId !== "") root.clearProfileChooser()
         else root.close()
       }
       onTabRequested: function(direction) { if (root.bar && root.bar.switchPanelFrom) root.bar.switchPanelFrom(root.barIdentity, direction) }
@@ -576,7 +718,7 @@ Panel {
               }
               Row {
                 spacing: Style.space(6)
-                visible: root.confirmServerId !== modelData.id
+                visible: root.confirmServerId !== modelData.id && root.profileServerId !== modelData.id
                 Button {
                   text: "Start"
                   bordered: true
@@ -600,6 +742,59 @@ Panel {
                   foreground: root.barForeground
                   enabled: !helper.running
                   onClicked: root.requestAction(modelData, "restart")
+                }
+                Button {
+                  text: "Change profile"
+                  bordered: true
+                  fontFamily: root.uiFont
+                  foreground: root.barForeground
+                  visible: modelData.status === "Stopped"
+                  enabled: !helper.running
+                  onClicked: root.requestChangeProfile(modelData)
+                }
+              }
+              Column {
+                width: parent.width
+                visible: root.profileServerId === modelData.id && root.confirmServerId !== modelData.id
+                spacing: Style.space(6)
+                PlainText {
+                  width: parent.width
+                  text: "Choose a profile"
+                  color: root.barForeground
+                  font.family: root.uiFont
+                  font.pixelSize: Style.font.body
+                  font.bold: true
+                }
+                Repeater {
+                  model: root.profileSetups
+                  delegate: Button {
+                    required property var modelData
+                    text: String(modelData.name || modelData.id || "profile") + (modelData.selected === true ? " (selected)" : "")
+                    bordered: true
+                    fontFamily: root.uiFont
+                    foreground: root.barForeground
+                    enabled: !helper.running && modelData.selected !== true
+                    onClicked: root.requestSelectSetup(root.serverById(root.profileServerId), modelData)
+                  }
+                }
+                Row {
+                  spacing: Style.space(6)
+                  Button {
+                    text: "Unload"
+                    bordered: true
+                    fontFamily: root.uiFont
+                    foreground: root.barForeground
+                    visible: root.profileSelectedSetupId !== ""
+                    enabled: !helper.running
+                    onClicked: root.requestUnloadSetup(root.serverById(root.profileServerId))
+                  }
+                  Button {
+                    text: "Cancel"
+                    bordered: true
+                    fontFamily: root.uiFont
+                    foreground: root.barForeground
+                    onClicked: root.clearProfileChooser()
+                  }
                 }
               }
               Column {
