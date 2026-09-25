@@ -582,7 +582,61 @@ class FakeServerTests(unittest.TestCase):
             self.assertIsNone(hit["authorization"])
             self.assertNotIn("genos", os.path.basename(hit["path"]))
 
+
+    def test_device_login_rejects_empty_user_code(self):
+        class EmptyCodeTransport:
+            def request(self, origin, method, path, headers, body):
+                return 201, json.dumps(
+                    {
+                        "deviceCode": "device-1",
+                        "userCode": "",
+                        "verificationPath": "/account?code=ABCD-EFGH",
+                        "interval": 1,
+                        "expiresIn": 30,
+                    }
+                ).encode()
+
+        with self.assertRaises(panel.ProtocolError) as raised:
+            panel.device_login(
+                self.origin,
+                transport=EmptyCodeTransport(),
+                store=lambda o, t: "file",
+                sleep=lambda _seconds: None,
+            )
+        self.assertIn("incomplete", str(raised.exception))
+
+    def test_device_login_accepts_snake_case_fields(self):
+        class SnakeTransport:
+            def __init__(self):
+                self.polls = 0
+
+            def request(self, origin, method, path, headers, body):
+                if path.endswith("/codes"):
+                    return 201, json.dumps(
+                        {
+                            "device_code": "device-1",
+                            "user_code": "ABCD-EFGH",
+                            "verification_path": "/account?code=ABCD-EFGH",
+                            "interval": 1,
+                            "expires_in": 30,
+                        }
+                    ).encode()
+                self.polls += 1
+                if self.polls == 1:
+                    return 400, b'{"error":{"code":"authorization_pending","message":"waiting"}}'
+                return 200, b'{"token":"issued-token"}'
+
+        events = panel.device_login(
+            self.origin,
+            transport=SnakeTransport(),
+            store=lambda o, t: "file",
+            sleep=lambda _seconds: None,
+        )
+        self.assertEqual(events[0]["userCode"], "ABCD-EFGH")
+        self.assertEqual(events[0]["verificationUri"], self.origin + "/account?code=ABCD-EFGH")
+
     def test_pending_poll_requires_nested_error_code(self):
+
         kind, value = panel._interpret_poll(400, b'{"error":{"code":"authorization_pending","message":"waiting"}}')
         self.assertEqual((kind, value), ("pending", "authorization_pending"))
         with self.assertRaises(panel.ProtocolError):

@@ -1269,7 +1269,7 @@ def device_login(
     sleeper = time.sleep if sleep is None else sleep
     now = time.monotonic if clock is None else clock
     saver = store or (lambda item, value: store_token(item, value))
-    headers = {"Accept": "application/json", "Content-Type": "application/json", "User-Agent": "genos-omarchy/2026.9.22"}
+    headers = {"Accept": "application/json", "Content-Type": "application/json", "User-Agent": "genos-omarchy/2026.9.25"}
     machine = socket.gethostname() if machine_name is None else machine_name
     start = device_code_request(checked, machine)
     status, data = client.request(
@@ -1286,15 +1286,28 @@ def device_login(
     if status != 201:
         raise ProtocolError("device login could not start")
     document = _json_object(data)
-    device_code = document.get("deviceCode")
+    device_code = _pick(document, "deviceCode", "device_code")
     if not isinstance(device_code, str) or len(device_code) > 512 or any(char in device_code for char in "\r\n\x00"):
         raise ProtocolError("device code was invalid")
-    verification_path = document.get("verificationPath")
+    verification_path = _pick(document, "verificationPath", "verification_path")
     opened = approval_url(checked, verification_path)
     if opened == "":
-        raise ProtocolError("approval path was invalid")
-    interval_value = document.get("interval")
-    expires_value = document.get("expiresIn")
+        raise ProtocolError(
+            "approval path was invalid"
+            f" (verificationPath={verification_path!r} keys={sorted(document.keys())})"
+        )
+    user_code = _user_code(_pick(document, "userCode", "user_code"))
+    verification_uri = safe_verification_uri(checked, opened)
+    if user_code == "" or verification_uri == "":
+        raise ProtocolError(
+            "device login code event incomplete"
+            f" (userCode={_pick(document, 'userCode', 'user_code')!r}"
+            f" verificationPath={verification_path!r}"
+            f" verificationUri={verification_uri!r}"
+            f" keys={sorted(document.keys())})"
+        )
+    interval_value = _pick(document, "interval")
+    expires_value = _pick(document, "expiresIn", "expires_in")
     try:
         interval = max(1, min(int(interval_value), 30))
         expires = max(1, min(int(expires_value), max_wait))
@@ -1311,9 +1324,9 @@ def device_login(
         {
             "event": "code",
             "origin": checked,
-            "userCode": _user_code(document.get("userCode")),
+            "userCode": user_code,
             "verificationPath": verification_path,
-            "verificationUri": safe_verification_uri(checked, opened),
+            "verificationUri": verification_uri,
         }
     )
     deadline = now() + expires
