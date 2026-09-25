@@ -1,6 +1,6 @@
 # Genos
 
-Omarchy bar widget for the Genos servers on your account. Each row shows the server name, game name, and status. The only actions are Start, Stop, and Restart.
+Omarchy bar widget for the Genos servers on your account. Each row shows the server name, game name, status, and selected profile name when present. Lifecycle actions are Start, Stop, and Restart. When a server is **Stopped**, the panel also offers **Change profile** (list setups, select, or unload).
 
 The widget calls the Genos HTTP API itself. It does not run the `genos` program.
 
@@ -19,8 +19,15 @@ With a token it calls:
 
 - `GET /api/v1/servers`
 - `POST /api/v1/servers/{id}/actions` with an `Idempotency-Key` and `{"type":"start|stop|restart","confirmUnsavedProgressLoss":false}`
+- `GET /api/v1/servers/{id}/setups` (helper `setups`)
+- `PUT /api/v1/servers/{id}/selected-setup` with `{"setupID","expectedSelectedSetupID"}` (helper `select-setup`)
+- `DELETE /api/v1/servers/{id}/selected-setup` with `{"expectedSelectedSetupID"}` (helper `unload-setup`)
+
+Those three profile helpers hit only the setups / selected-setup endpoints above.
 
 Start is sent immediately. Stop asks for confirmation and the question names the server. Restart asks only when `playerCount` is greater than zero or `notableUpdates` is not empty.
+
+**Change profile** is shown only when the row status is `Stopped`. Select and unload ask for confirmation (CLI: `--confirm` or `--confirmed`, same as Stop). The panel refuses client-side when status is not Stopped; the API conflict code `server_not_confirmed_stopped` is surfaced in the status line when returned.
 
 **Primary auth today:** paste a personal access token (PAT) in the panel and click **Connect** (or use Create a token → account page). That stores the token in the shared host store (`Secret Service` attribute `host`, or `credentials.json`) so `genos` on the same machine can reuse it.
 

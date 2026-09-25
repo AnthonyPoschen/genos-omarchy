@@ -56,6 +56,9 @@ class MenuTests(unittest.TestCase):
         self.assertTrue(row["restartNeedsConfirm"])
         self.assertIn("Alpha", row["confirmStop"])
         self.assertNotIn("<", row["confirmStop"])
+        self.assertEqual(row["selectedSetupID"], "")
+        self.assertEqual(row["selectedSetupName"], "")
+        self.assertFalse(row["canChangeProfile"])
 
     def test_rejects_too_many_servers(self):
         payload = {
@@ -72,6 +75,25 @@ class MenuTests(unittest.TestCase):
         self.assertIsNone(rows[0]["playerCount"])
         self.assertEqual(rows[0]["notableUpdates"], [])
         self.assertFalse(rows[0]["restartNeedsConfirm"])
+        self.assertTrue(rows[0]["canChangeProfile"])
+
+    def test_selected_setup_name_is_passed_through(self):
+        rows = panel.parse_menu(
+            {
+                "servers": [
+                    {
+                        "id": "server-1",
+                        "name": "Alpha",
+                        "status": "Stopped",
+                        "selectedSetupID": "setup-a",
+                        "selectedSetupName": "Factorio Main",
+                    }
+                ]
+            }
+        )
+        self.assertEqual(rows[0]["selectedSetupID"], "setup-a")
+        self.assertEqual(rows[0]["selectedSetupName"], "Factorio Main")
+        self.assertTrue(rows[0]["canChangeProfile"])
 
 
 class ConfirmTests(unittest.TestCase):
@@ -565,6 +587,261 @@ class FakeServerTests(unittest.TestCase):
         self.assertEqual((kind, value), ("pending", "authorization_pending"))
         with self.assertRaises(panel.ProtocolError):
             panel._interpret_poll(400, b'{"error":"authorization_pending"}')
+
+
+
+class ProfileTests(unittest.TestCase):
+    def stopped_menu(self, **changes):
+        server = {
+            "id": "server-1",
+            "name": "Alpha",
+            "game": {"name": "Factorio"},
+            "status": "Stopped",
+            "selectedSetupID": "setup-a",
+            "selectedSetupName": "Factorio 1",
+            "notableUpdates": [],
+            "metrics": {"playerCount": 0},
+        }
+        server.update(changes)
+        return {"servers": [server]}
+
+    def chooser(self):
+        return {
+            "selectedSetupID": "setup-a",
+            "setups": [
+                {"id": "setup-a", "name": "Factorio 1", "game": {"name": "Factorio"}},
+                {"id": "setup-b", "name": "Factorio 2", "game": {"name": "Factorio"}},
+            ],
+            "capacity": {"used": 2, "limit": 5},
+            "creatableGames": [],
+        }
+
+    def test_setups_lists_profiles(self):
+        calls = []
+
+        class Transport:
+            def request(self, origin, method, path, headers, body=None):
+                calls.append((method, path, body, headers.get("Authorization")))
+                if method != "GET" or path != "/api/v1/servers/server-1/setups":
+                    raise AssertionError(f"unexpected {method} {path}")
+                return 200, json.dumps(
+                    {
+                        "selectedSetupID": "setup-a",
+                        "setups": [
+                            {"id": "setup-a", "name": "Factorio 1", "game": {"name": "Factorio"}},
+                            {"id": "setup-b", "name": "Factorio 2", "game": {"name": "Factorio"}},
+                        ],
+                        "capacity": {"used": 2, "limit": 5},
+                        "creatableGames": [],
+                    }
+                ).encode()
+
+        credential = panel.Resolved("sekret", "env")
+        result = panel.do_setups("server-1", origin=ORIGIN, credential=credential, transport=Transport())
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["serverId"], "server-1")
+        self.assertEqual(result["selectedSetupID"], "setup-a")
+        self.assertEqual(len(result["setups"]), 2)
+        self.assertEqual(result["setups"][0]["name"], "Factorio 1")
+        self.assertTrue(result["setups"][0]["selected"])
+        self.assertFalse(result["setups"][1]["selected"])
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(calls[0][:3], ("GET", "/api/v1/servers/server-1/setups", None))
+        self.assertEqual(calls[0][3], "Bearer sekret")
+
+    def test_select_setup_happy_path(self):
+        calls = []
+        menu = self.stopped_menu()
+        chooser = self.chooser()
+
+        class Transport:
+            def request(self, origin, method, path, headers, body=None):
+                calls.append((method, path, headers, body))
+                if method == "GET" and path == "/api/v1/servers":
+                    return 200, json.dumps(menu).encode()
+                if method == "GET" and path == "/api/v1/servers/server-1/setups":
+                    return 200, json.dumps(chooser).encode()
+                if method == "PUT" and path == "/api/v1/servers/server-1/selected-setup":
+                    return 200, json.dumps(
+                        {"server": {"id": "server-1", "selectedSetupID": "setup-b", "selectedSetupName": "Factorio 2"}}
+                    ).encode()
+                raise AssertionError(f"unexpected {method} {path}")
+
+        credential = panel.Resolved("sekret", "env")
+        with self.assertRaises(panel.ConfirmRequired) as caught:
+            panel.do_select_setup(
+                "server-1",
+                "setup-b",
+                False,
+                expected="setup-a",
+                origin=ORIGIN,
+                credential=credential,
+                transport=Transport(),
+            )
+        self.assertEqual(caught.exception.action, "select-setup")
+        self.assertIn("Factorio", caught.exception.message)
+        self.assertTrue(any(item[0] == "GET" for item in calls))
+        self.assertFalse(any(item[0] == "PUT" for item in calls))
+
+        calls.clear()
+        result = panel.do_select_setup(
+            "server-1",
+            "setup-b",
+            True,
+            expected="setup-a",
+            origin=ORIGIN,
+            credential=credential,
+            transport=Transport(),
+        )
+        self.assertEqual(result["action"], "select-setup")
+        self.assertEqual(result["setupId"], "setup-b")
+        self.assertEqual(result["selectedSetupName"], "Factorio 2")
+        put = [item for item in calls if item[0] == "PUT"][0]
+        self.assertEqual(put[1], "/api/v1/servers/server-1/selected-setup")
+        self.assertEqual(json.loads(put[3]), {"setupID": "setup-b", "expectedSelectedSetupID": "setup-a"})
+        self.assertEqual(put[2]["Content-Type"], "application/json")
+        self.assertEqual(put[2]["Authorization"], "Bearer sekret")
+
+    def test_unload_setup_happy_path(self):
+        calls = []
+        menu = self.stopped_menu()
+
+        class Transport:
+            def request(self, origin, method, path, headers, body=None):
+                calls.append((method, path, body))
+                if method == "GET" and path == "/api/v1/servers":
+                    return 200, json.dumps(menu).encode()
+                if method == "DELETE" and path == "/api/v1/servers/server-1/selected-setup":
+                    return 200, json.dumps({"server": {"id": "server-1", "selectedSetupID": ""}}).encode()
+                raise AssertionError(f"unexpected {method} {path}")
+
+        credential = panel.Resolved("sekret", "env")
+        with self.assertRaises(panel.ConfirmRequired):
+            panel.do_unload_setup(
+                "server-1",
+                False,
+                expected="setup-a",
+                origin=ORIGIN,
+                credential=credential,
+                transport=Transport(),
+            )
+        self.assertFalse(any(item[0] == "DELETE" for item in calls))
+        calls.clear()
+        result = panel.do_unload_setup(
+            "server-1",
+            True,
+            expected="setup-a",
+            origin=ORIGIN,
+            credential=credential,
+            transport=Transport(),
+        )
+        self.assertEqual(result["action"], "unload-setup")
+        deleted = [item for item in calls if item[0] == "DELETE"]
+        self.assertEqual(len(deleted), 1)
+        self.assertEqual(json.loads(deleted[0][2]), {"expectedSelectedSetupID": "setup-a"})
+
+    def test_select_refuses_when_not_stopped(self):
+        calls = []
+        menu = self.stopped_menu(status="Running")
+
+        class Transport:
+            def request(self, origin, method, path, headers, body=None):
+                calls.append((method, path))
+                if method == "GET" and path == "/api/v1/servers":
+                    return 200, json.dumps(menu).encode()
+                raise AssertionError("profile mutation was sent")
+
+        credential = panel.Resolved("sekret", "env")
+        with self.assertRaises(panel.ProtocolError) as caught:
+            panel.do_select_setup(
+                "server-1",
+                "setup-b",
+                True,
+                expected="setup-a",
+                origin=ORIGIN,
+                credential=credential,
+                transport=Transport(),
+            )
+        self.assertIn("Stopped", str(caught.exception))
+        self.assertEqual(calls, [("GET", "/api/v1/servers")])
+
+        with self.assertRaises(panel.ProtocolError) as caught:
+            panel.do_unload_setup(
+                "server-1",
+                True,
+                expected="setup-a",
+                origin=ORIGIN,
+                credential=credential,
+                transport=Transport(),
+            )
+        self.assertIn("Stopped", str(caught.exception))
+
+    def test_expected_selected_setup_mismatch(self):
+        menu = self.stopped_menu()
+
+        class Transport:
+            def request(self, origin, method, path, headers, body=None):
+                if method == "GET" and path == "/api/v1/servers":
+                    return 200, json.dumps(menu).encode()
+                if method == "PUT":
+                    return (
+                        409,
+                        b'{"error":{"code":"saved_setup_selection_changed","message":"the selected Profile changed; review the current selection and try again"}}',
+                    )
+                raise AssertionError(f"unexpected {method} {path}")
+
+        credential = panel.Resolved("sekret", "env")
+        with self.assertRaises(panel.ProtocolError) as caught:
+            panel.do_select_setup(
+                "server-1",
+                "setup-b",
+                True,
+                expected="stale-setup",
+                origin=ORIGIN,
+                credential=credential,
+                transport=Transport(),
+            )
+        self.assertIn("saved_setup_selection_changed", str(caught.exception))
+
+    def test_surfaces_server_not_confirmed_stopped(self):
+        menu = self.stopped_menu()
+
+        class Transport:
+            def request(self, origin, method, path, headers, body=None):
+                if method == "GET" and path == "/api/v1/servers":
+                    return 200, json.dumps(menu).encode()
+                if method == "PUT":
+                    return (
+                        409,
+                        b'{"error":{"code":"server_not_confirmed_stopped","message":"the Server must be confirmed stopped before changing Profiles"}}',
+                    )
+                raise AssertionError(f"unexpected {method} {path}")
+
+        credential = panel.Resolved("sekret", "env")
+        with self.assertRaises(panel.ProtocolError) as caught:
+            panel.do_select_setup(
+                "server-1",
+                "setup-b",
+                True,
+                expected="setup-a",
+                origin=ORIGIN,
+                credential=credential,
+                transport=Transport(),
+            )
+        self.assertIn("server_not_confirmed_stopped", str(caught.exception))
+
+    def test_parse_select_and_unload_args(self):
+        server, setup, confirmed, expected = panel.parse_select_setup_args(
+            ["server-1", "setup-b", "--expected", "setup-a", "--confirm"]
+        )
+        self.assertEqual((server, setup, confirmed, expected), ("server-1", "setup-b", True, "setup-a"))
+        server, confirmed, expected = panel.parse_unload_setup_args(["server-1", "--confirmed", "--expected", "setup-a"])
+        self.assertEqual((server, confirmed, expected), ("server-1", True, "setup-a"))
+        self.assertEqual(panel.parse_setups_args(["server-1"]), "server-1")
+        with self.assertRaises(panel.ProtocolError):
+            panel.parse_select_setup_args(["server-1"])
+        with self.assertRaises(panel.ProtocolError):
+            panel.parse_unload_setup_args([])
 
 
 if __name__ == "__main__":
