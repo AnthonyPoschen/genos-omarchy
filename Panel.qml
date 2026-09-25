@@ -8,7 +8,7 @@ Panel {
   id: root
   moduleName: "io.github.anthonyposchen.genos"
   manageIpc: false
-  readonly property string pluginVersion: "2026.9.25+4"
+  readonly property string pluginVersion: "2026.9.25+5"
 
   property var anchorItem: null
   property var hostWidget: null
@@ -78,13 +78,11 @@ Panel {
 
   function childEnvironment(includeToken) {
     var env = { "PATH": "/usr/bin", "LANG": "C.UTF-8" }
-    var keys = ["HOME", "USER", "LOGNAME", "XDG_RUNTIME_DIR", "DBUS_SESSION_BUS_ADDRESS", "XDG_CONFIG_HOME"]
+    var keys = ["HOME", "USER", "LOGNAME", "XDG_RUNTIME_DIR", "DBUS_SESSION_BUS_ADDRESS", "XDG_CONFIG_HOME", "GENOS_HOST"]
     for (var i = 0; i < keys.length; i++) {
       var value = String(Quickshell.env(keys[i]) || "")
       if (value.length > 0) env[keys[i]] = value
     }
-    var host = String(root.setting("origin", "https://genosservers.com") || "").trim()
-    if (host.length > 0) env["GENOS_HOST"] = host
     return env
   }
 
@@ -92,13 +90,13 @@ Panel {
     return String(root.setting("token", "") || "").trim()
   }
 
-  function savedOrigin() {
-    var origin = String(root.setting("origin", "https://genosservers.com") || "").trim()
-    return origin.length > 0 ? origin : "https://genosservers.com"
+  function apiOrigin() {
+    var host = String(Quickshell.env("GENOS_HOST") || "").trim().replace(/\/+$/, "")
+    return host.length > 0 ? host : "https://genosservers.com"
   }
 
   function accountUrl() {
-    var origin = root.savedOrigin().replace(/\/+$/, "")
+    var origin = root.apiOrigin().replace(/\/+$/, "")
     // Account page lists devices and PATs (Clerk menu). Prefer this over #create-token.
     return origin + "/account"
   }
@@ -116,7 +114,7 @@ Panel {
   }
 
   function writeSettings() {
-    root.pendingInput = JSON.stringify({ token: root.savedToken(), origin: root.savedOrigin() })
+    root.pendingInput = JSON.stringify({ token: root.savedToken() })
   }
 
   function openerEnvironment() {
@@ -218,18 +216,6 @@ Panel {
     root.openWithBrowser(root.verificationUri)
   }
 
-  function saveOrigin() {
-    var value = String(originField.text || "").trim().replace(/\/+$/, "")
-    if (value === "") value = "https://genosservers.com"
-    if (!root.allowedUri(value)) {
-      root.settingsMessage = "Use https://genosservers.com, or a loopback address such as http://genos.localhost:8000."
-      return
-    }
-    root.settingsMessage = ""
-    root.saveSetting("origin", value)
-    originField.text = value
-  }
-
   function clearToken() {
     root.saveSetting("token", "")
     settingsTokenField.text = ""
@@ -275,6 +261,7 @@ Panel {
 
   function requestAction(row, action) {
     if (!row || (action !== "start" && action !== "stop" && action !== "restart")) return
+    if (!root.actionAllowed(row.status, action)) return
     var serverId = root.safeId(row.id)
     if (serverId === "") return
     root.clearProfileChooser()
@@ -392,17 +379,40 @@ Panel {
     root.startHelper(args, true)
   }
 
-  function detail(row) {
-    var game = String(row.gameName || "")
-    var state = String(row.status || "")
-    var profile = String(row.selectedSetupName || "")
-    var text = game
-    if (state.length > 0) text = text.length > 0 ? text + " · " + state : state
-    if (profile.length > 0) text = text.length > 0 ? text + " · " + profile : profile
+  function actionAllowed(status, action) {
+    var state = String(status || "")
+    if (action === "start") return state === "Stopped"
+    if (action === "stop") return state === "Running" || state === "Starting" || state === "Restarting"
+    if (action === "restart") return state === "Running"
+    return false
+  }
+
+  function actionEnabled(status, action) {
+    return !helper.running && root.actionAllowed(status, action)
+  }
+
+  function mutedControlOpacity(on) {
+    return on ? 1 : 0.4
+  }
+
+  function mutedControlForeground(on) {
+    return on ? root.barForeground : Color.muted
+  }
+
+  function statusColor(state) {
+    var s = String(state || "")
+    if (s === "Running") return Color.accent
+    if (s === "Stopped" || s === "Needs setup") return Color.muted
+    if (s === "Status unavailable" || s === "Action required") return Color.urgent
+    if (s === "Starting" || s === "Stopping" || s === "Restarting" || s === "Provisioning") return Color.accent
+    return root.barForeground
+  }
+
+  function detailPlayers(row) {
     if (typeof row.playerCount === "number" && isFinite(row.playerCount)) {
-      text += (text.length > 0 ? " · " : "") + row.playerCount + (row.playerCount === 1 ? " player" : " players")
+      return row.playerCount + (row.playerCount === 1 ? " player" : " players")
     }
-    return text
+    return ""
   }
 
   function countRunning(rows) {
@@ -840,14 +850,70 @@ Panel {
                   fontFamily: root.uiFont
                 }
               }
-              PlainText {
+              Row {
                 width: parent.width
-                text: root.detail(modelData)
-                elide: Text.ElideRight
-                color: root.barForeground
-                opacity: 0.72
-                font.family: root.uiFont
-                font.pixelSize: Style.font.bodySmall
+                spacing: 0
+                clip: true
+
+                PlainText {
+                  text: String(modelData.gameName || "")
+                  visible: String(modelData.gameName || "").length > 0
+                  elide: Text.ElideRight
+                  color: root.barForeground
+                  opacity: 0.72
+                  font.family: root.uiFont
+                  font.pixelSize: Style.font.bodySmall
+                }
+                PlainText {
+                  text: " · "
+                  visible: String(modelData.gameName || "").length > 0 && String(modelData.status || "").length > 0
+                  color: root.barForeground
+                  opacity: 0.72
+                  font.family: root.uiFont
+                  font.pixelSize: Style.font.bodySmall
+                }
+                PlainText {
+                  text: String(modelData.status || "")
+                  visible: String(modelData.status || "").length > 0
+                  elide: Text.ElideRight
+                  color: root.statusColor(modelData.status)
+                  font.family: root.uiFont
+                  font.pixelSize: Style.font.bodySmall
+                }
+                PlainText {
+                  text: " · "
+                  visible: String(modelData.status || "").length > 0 && String(modelData.selectedSetupName || "").length > 0
+                  color: root.barForeground
+                  opacity: 0.72
+                  font.family: root.uiFont
+                  font.pixelSize: Style.font.bodySmall
+                }
+                PlainText {
+                  text: String(modelData.selectedSetupName || "")
+                  visible: String(modelData.selectedSetupName || "").length > 0
+                  elide: Text.ElideRight
+                  color: root.barForeground
+                  opacity: 0.72
+                  font.family: root.uiFont
+                  font.pixelSize: Style.font.bodySmall
+                }
+                PlainText {
+                  text: " · "
+                  visible: root.detailPlayers(modelData) !== "" && (String(modelData.gameName || "").length > 0 || String(modelData.status || "").length > 0 || String(modelData.selectedSetupName || "").length > 0)
+                  color: root.barForeground
+                  opacity: 0.72
+                  font.family: root.uiFont
+                  font.pixelSize: Style.font.bodySmall
+                }
+                PlainText {
+                  text: root.detailPlayers(modelData)
+                  visible: root.detailPlayers(modelData) !== ""
+                  elide: Text.ElideRight
+                  color: root.barForeground
+                  opacity: 0.72
+                  font.family: root.uiFont
+                  font.pixelSize: Style.font.bodySmall
+                }
               }
               Row {
                 spacing: Style.space(6)
@@ -856,24 +922,27 @@ Panel {
                   text: "Start"
                   bordered: true
                   fontFamily: root.uiFont
-                  foreground: root.barForeground
-                  enabled: !helper.running
+                  foreground: root.mutedControlForeground(root.actionEnabled(modelData.status, "start"))
+                  opacity: root.mutedControlOpacity(root.actionEnabled(modelData.status, "start"))
+                  enabled: root.actionEnabled(modelData.status, "start")
                   onClicked: root.requestAction(modelData, "start")
                 }
                 Button {
                   text: "Stop"
                   bordered: true
                   fontFamily: root.uiFont
-                  foreground: root.barForeground
-                  enabled: !helper.running
+                  foreground: root.mutedControlForeground(root.actionEnabled(modelData.status, "stop"))
+                  opacity: root.mutedControlOpacity(root.actionEnabled(modelData.status, "stop"))
+                  enabled: root.actionEnabled(modelData.status, "stop")
                   onClicked: root.requestAction(modelData, "stop")
                 }
                 Button {
                   text: "Restart"
                   bordered: true
                   fontFamily: root.uiFont
-                  foreground: root.barForeground
-                  enabled: !helper.running
+                  foreground: root.mutedControlForeground(root.actionEnabled(modelData.status, "restart"))
+                  opacity: root.mutedControlOpacity(root.actionEnabled(modelData.status, "restart"))
+                  enabled: root.actionEnabled(modelData.status, "restart")
                   onClicked: root.requestAction(modelData, "restart")
                 }
                 Button {
@@ -981,7 +1050,7 @@ Panel {
     PanelKeyCatcher {
       id: settingsCatcher
       anchors.fill: parent
-      blocked: originField.activeFocus || settingsTokenField.activeFocus
+      blocked: settingsTokenField.activeFocus
       onCloseRequested: root.settingsOpen = false
 
       Column {
@@ -1009,31 +1078,6 @@ Panel {
             font.family: root.uiFont
             font.pixelSize: Style.font.caption
           }
-        }
-
-        PlainText {
-          width: parent.width
-          text: "Genos site"
-          color: root.barForeground
-          font.family: root.uiFont
-          font.pixelSize: Style.font.bodySmall
-        }
-        TextField {
-          id: originField
-          width: parent.width
-          text: root.savedOrigin()
-          placeholderText: "https://genosservers.com"
-          font.family: root.uiFont
-          foreground: root.barForeground
-          selectByMouse: true
-          onAccepted: root.saveOrigin()
-        }
-        Button {
-          text: "Save site"
-          bordered: true
-          fontFamily: root.uiFont
-          foreground: root.barForeground
-          onClicked: root.saveOrigin()
         }
 
         PlainText {

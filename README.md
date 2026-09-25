@@ -29,13 +29,13 @@ omarchy plugin update io.github.anthonyposchen.genos --yes
 omarchy restart shell
 ```
 
-**Verify load:** open the Genos panel. The top-right corner must show `v2026.9.25+4` (or the version in `manifest.json`). Status stays human (`Authentication not configured`, `Waiting for approval — code …`, etc.) without a plugin stamp. If the corner version is missing or wrong, the shell is still on stale QML — run `omarchy restart shell` again.
+**Verify load:** open the Genos panel. The top-right corner must show `v2026.9.25+5` (or the version in `manifest.json`). Status stays human (`Authentication not configured`, `Waiting for approval — code …`, etc.) without a plugin stamp. If the corner version is missing or wrong, the shell is still on stale QML — run `omarchy restart shell` again.
 
 After **Sign in**, approve in the browser even if the panel closes. Reopen: you should be authenticated (server list or Signed in), not leftover Your code / Open again with no token.
 
 ## What it talks to
 
-The origin is `GENOS_HOST` when that is set, otherwise `currentHost` in `$XDG_CONFIG_HOME/genos/config.toml` (default `~/.config/genos/config.toml`). `current` is used only when `currentHost` is absent. The origin must be `https`, except `http` for `localhost`, `127.0.0.1`, or `genos.localhost`.
+Override the API host with the `GENOS_HOST` environment variable (default `https://genosservers.com`). There is no Genos site field in Settings. When `GENOS_HOST` is unset, the helper also accepts `currentHost` in `$XDG_CONFIG_HOME/genos/config.toml` (default `~/.config/genos/config.toml`); `current` is used only when `currentHost` is absent. The origin must be `https`, except `http` for `localhost`, `127.0.0.1`, or `genos.localhost`.
 
 With a token it calls:
 
