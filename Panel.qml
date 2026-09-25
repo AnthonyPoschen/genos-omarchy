@@ -186,7 +186,7 @@ Panel {
 
   function openVerification() {
     if (!root.allowedUri(root.verificationUri) || opener.running) return
-    opener.command = ["/usr/bin/xdg-open", "--", root.verificationUri]
+    opener.command = ["/usr/bin/xdg-open", root.verificationUri]
     opener.clearEnvironment = true
     opener.environment = root.openerEnvironment()
     opener.running = true
@@ -217,7 +217,7 @@ Panel {
   function openAccount() {
     var url = root.accountUrl()
     if (!root.allowedUri(url) || opener.running) return
-    opener.command = ["/usr/bin/xdg-open", "--", url]
+    opener.command = ["/usr/bin/xdg-open", url]
     opener.clearEnvironment = true
     opener.environment = root.openerEnvironment()
     opener.running = true
@@ -424,7 +424,9 @@ Panel {
       root.loginOrigin = String(doc.origin || "")
       var uri = String(doc.verificationUri || "")
       root.verificationUri = root.allowedUri(uri) && root.uriMatchesOrigin(uri, root.loginOrigin) ? uri : ""
-      root.status = "Waiting for approval in the browser"
+      root.status = root.userCode.length > 0
+        ? ("Waiting for approval — code " + root.userCode)
+        : "Waiting for approval in the browser"
       if (root.verificationUri !== "") root.openVerification()
       return
     }
@@ -591,6 +593,23 @@ Panel {
     clearEnvironment: true
     command: []
     environment: ({ "PATH": "/usr/bin" })
+    onExited: function(code, _status) {
+      if (code === 0) return
+      var cmd = opener.command
+      var opened = cmd && cmd.length > 1 ? String(cmd[1] || "") : ""
+      if (opened !== "" && opened === root.verificationUri) {
+        var fail = "Could not open the browser"
+        if (root.userCode.length > 0) fail += ". Enter code " + root.userCode
+        if (root.verificationUri !== "") fail += " or use Open again"
+        root.status = fail
+        return
+      }
+      if (root.settingsOpen) {
+        root.settingsMessage = "Could not open the Genos account page"
+        return
+      }
+      root.status = "Could not open the browser"
+    }
   }
 
   KeyboardPanel {
@@ -672,6 +691,25 @@ Panel {
               foreground: root.barForeground
               enabled: !(helper.running && root.operation === "login")
               onClicked: root.signIn()
+            }
+            PlainText {
+              width: parent.width
+              visible: root.userCode.length > 0
+              text: "Your code: " + root.userCode
+              wrapMode: Text.WordWrap
+              color: root.barForeground
+              font.family: root.uiFont
+              font.pixelSize: Style.font.body
+              font.bold: true
+            }
+            Button {
+              visible: root.verificationUri !== "" && root.userCode.length > 0
+              text: "Open again"
+              bordered: true
+              fontFamily: root.uiFont
+              foreground: root.barForeground
+              enabled: !opener.running
+              onClicked: root.openVerification()
             }
           }
 
