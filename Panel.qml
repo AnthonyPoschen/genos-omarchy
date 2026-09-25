@@ -8,7 +8,7 @@ Panel {
   id: root
   moduleName: "io.github.anthonyposchen.genos"
   manageIpc: false
-  readonly property string pluginVersion: "2026.9.25+2"
+  readonly property string pluginVersion: "2026.9.25+3"
 
   property var anchorItem: null
   property var hostWidget: null
@@ -99,7 +99,8 @@ Panel {
 
   function accountUrl() {
     var origin = root.savedOrigin().replace(/\/+$/, "")
-    return origin + "/account#create-token"
+    // Account page lists devices and PATs (Clerk menu). Prefer this over #create-token.
+    return origin + "/account"
   }
 
   function saveSetting(key, value) {
@@ -198,12 +199,19 @@ Panel {
   }
 
   function openWithBrowser(url) {
+    // Prefer xdg-open with portal/desktop env. Qt.openUrlExternally can report
+    // success in Quickshell without actually opening a browser, which left
+    // Sign-in and Manage tokens stuck with no page.
     if (!root.allowedUri(url) || opener.running) return
-    if (root.tryOpenUrlExternally(url)) return
     opener.command = ["/usr/bin/xdg-open", url]
     opener.clearEnvironment = true
     opener.environment = root.openerEnvironment()
     opener.running = true
+  }
+
+  function openWithBrowserFallback(url) {
+    if (!root.allowedUri(url)) return
+    root.tryOpenUrlExternally(url)
   }
 
   function openVerification() {
@@ -624,6 +632,7 @@ Panel {
       if (code === 0) return
       var cmd = opener.command
       var opened = cmd && cmd.length > 1 ? String(cmd[1] || "") : ""
+      if (opened !== "") root.openWithBrowserFallback(opened)
       if (opened !== "" && opened === root.verificationUri) {
         var fail = "Could not open the browser"
         if (root.userCode.length > 0) fail += ". Enter code " + root.userCode
@@ -632,7 +641,7 @@ Panel {
         return
       }
       if (root.settingsOpen) {
-        root.settingsMessage = "Could not open the Genos account page"
+        root.settingsMessage = "Could not open the Genos account page. Copy the URL from Status or open genosservers.com/account."
         return
       }
       root.status = "Could not open the browser"
@@ -1009,14 +1018,14 @@ Panel {
         Row {
           spacing: Style.space(6)
           Button {
-            text: "Create a token"
+            text: "Manage tokens"
             bordered: true
             fontFamily: root.uiFont
             foreground: root.barForeground
             onClicked: root.openAccount()
           }
           Button {
-            text: "Remove token"
+            text: "Remove token from this widget"
             bordered: true
             fontFamily: root.uiFont
             foreground: root.barForeground
