@@ -29,9 +29,9 @@ Start is sent immediately. Stop asks for confirmation and the question names the
 
 **Change profile** is shown only when the row status is `Stopped`. Select and unload ask for confirmation (CLI: `--confirm` or `--confirmed`, same as Stop). The panel refuses client-side when status is not Stopped; the API conflict code `server_not_confirmed_stopped` is surfaced in the status line when returned.
 
-**Primary auth today:** paste a personal access token (PAT) in the panel and click **Connect** (or use Create a token → account page). That stores the token in the shared host store (`Secret Service` attribute `host`, or `credentials.json`) so `genos` on the same machine can reuse it.
+**Primary auth:** click **Sign in**. Device auth (`POST /api/v1/auth/device/codes` and `…/tokens`) is live on production. The panel opens the approval page, shows your user code while waiting, and stores the token in the shared host store (`Secret Service` attribute `host`, or `credentials.json`) so `genos` on the same machine can reuse it.
 
-**Device Sign in** calls `POST /api/v1/auth/device/codes` and `…/tokens`. Those routes **require an upcoming Genos API** (production currently returns 404). Until they ship, use the PAT / Connect path.
+**Fallback:** paste a personal access token (PAT) in Settings and save it (or use Create a token → account page, then Connect). Use PAT / Connect when device Sign in is unavailable.
 
 Responses larger than 256 KiB are refused. A list of more than 64 servers is refused rather than cut short. Credentialed requests are not redirected.
 
@@ -47,16 +47,14 @@ The bar widget saves the token you paste in its own settings. A command that doe
 
 `~/.config/genos/local.env` is not read. A token is not passed on a command line, written into the log, or kept on a QML property after the request finishes.
 
-**Connect** (paste PAT) and device login (when the API exists) store the token with `secret-tool` (token on stdin). If the keyring is unavailable, they write the credentials file at mode `0600` and say they did. Connect reads the pasted token from the helper's stdin. Prefer Connect / paste PAT until device routes are live.
+**Sign in** (device login) and **Connect** (paste PAT) store the token with `secret-tool` (token on stdin). If the keyring is unavailable, they write the credentials file at mode `0600` and say they did. Connect reads the pasted token from the helper's stdin. Prefer **Sign in**; use Connect / paste PAT as a fallback.
 
 ## Obtaining a token
 
-Genos API routes expect an `Authorization: Bearer …` token for your account (Clerk session JWT today).
+Genos API routes expect an `Authorization: Bearer …` token for your account.
 
-1. **Preferred when available:** open **Create a token** in the panel (or visit the Genos account page), mint a personal access token, paste it, and click **Connect**.
-2. **Until that UI and device login ship:** production does not yet expose `/account` token minting or `POST /api/v1/auth/device/*`. Use a bearer your Genos deployment accepts (for smoke tests, a short-lived Clerk session token from a signed-in browser session), store it with Connect or `genos auth token`, then list servers.
-
-Device **Sign in** stays in the panel for when those API routes go live.
+1. **Primary:** click **Sign in** in the panel. Approve the device in the browser (user code is shown while waiting). Production serves `POST /api/v1/auth/device/*`.
+2. **Fallback:** open **Create a token** in the panel (or visit the Genos account page), mint a personal access token, paste it, and click **Connect** (or save it in widget settings). You can also store a token with `genos auth token`.
 
 ## Removing
 
