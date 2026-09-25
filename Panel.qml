@@ -184,12 +184,25 @@ Panel {
     root.startHelper(["login"], false)
   }
 
-  function openVerification() {
-    if (!root.allowedUri(root.verificationUri) || opener.running) return
-    opener.command = ["/usr/bin/xdg-open", root.verificationUri]
+  function tryOpenUrlExternally(url) {
+    try {
+      return Qt.openUrlExternally(url) === true
+    } catch (error) {
+      return false
+    }
+  }
+
+  function openWithBrowser(url) {
+    if (!root.allowedUri(url) || opener.running) return
+    if (root.tryOpenUrlExternally(url)) return
+    opener.command = ["/usr/bin/xdg-open", url]
     opener.clearEnvironment = true
     opener.environment = root.openerEnvironment()
     opener.running = true
+  }
+
+  function openVerification() {
+    root.openWithBrowser(root.verificationUri)
   }
 
   function saveOrigin() {
@@ -215,12 +228,7 @@ Panel {
   }
 
   function openAccount() {
-    var url = root.accountUrl()
-    if (!root.allowedUri(url) || opener.running) return
-    opener.command = ["/usr/bin/xdg-open", url]
-    opener.clearEnvironment = true
-    opener.environment = root.openerEnvironment()
-    opener.running = true
+    root.openWithBrowser(root.accountUrl())
   }
 
   function clearConfirm() {
@@ -423,10 +431,17 @@ Panel {
       root.userCode = root.tooltipPlain(doc.userCode).slice(0, 32)
       root.loginOrigin = String(doc.origin || "")
       var uri = String(doc.verificationUri || "")
-      root.verificationUri = root.allowedUri(uri) && root.uriMatchesOrigin(uri, root.loginOrigin) ? uri : ""
-      root.status = root.userCode.length > 0
-        ? ("Waiting for approval — code " + root.userCode)
-        : "Waiting for approval in the browser"
+      var uriOk = uri !== "" && root.allowedUri(uri) && root.uriMatchesOrigin(uri, root.loginOrigin)
+      root.verificationUri = uriOk ? uri : ""
+      if (uri !== "" && !uriOk) {
+        root.status = root.userCode.length > 0
+          ? ("Approval URL blocked — enter code " + root.userCode + " on the Genos account page")
+          : "Approval URL blocked — open the Genos account page in your browser to approve"
+      } else if (root.userCode.length > 0) {
+        root.status = "Waiting for approval — code " + root.userCode
+      } else {
+        root.status = "Waiting for approval in the browser"
+      }
       if (root.verificationUri !== "") root.openVerification()
       return
     }
@@ -702,8 +717,21 @@ Panel {
               font.pixelSize: Style.font.body
               font.bold: true
             }
+            TextEdit {
+              width: parent.width
+              visible: root.verificationUri !== ""
+              text: root.verificationUri
+              readOnly: true
+              selectByMouse: true
+              wrapMode: TextEdit.WrapAnywhere
+              textFormat: TextEdit.PlainText
+              color: root.barForeground
+              opacity: 0.72
+              font.family: root.uiFont
+              font.pixelSize: Style.font.caption
+            }
             Button {
-              visible: root.verificationUri !== "" && root.userCode.length > 0
+              visible: root.verificationUri !== ""
               text: "Open again"
               bordered: true
               fontFamily: root.uiFont

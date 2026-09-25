@@ -11,6 +11,13 @@ omarchy plugin add https://github.com/AnthonyPoschen/genos-omarchy --enable
 omarchy bar move io.github.anthonyposchen.genos --section right
 ```
 
+To pick up a newer plugin version after an update (for example when the panel still shows a generic “Waiting for approval in the browser” with no user code), remove and re-add:
+
+```sh
+omarchy plugin remove io.github.anthonyposchen.genos
+omarchy plugin add https://github.com/AnthonyPoschen/genos-omarchy --enable
+```
+
 ## What it talks to
 
 The origin is `GENOS_HOST` when that is set, otherwise `currentHost` in `$XDG_CONFIG_HOME/genos/config.toml` (default `~/.config/genos/config.toml`). `current` is used only when `currentHost` is absent. The origin must be `https`, except `http` for `localhost`, `127.0.0.1`, or `genos.localhost`.
