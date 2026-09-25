@@ -8,7 +8,7 @@ Panel {
   id: root
   moduleName: "io.github.anthonyposchen.genos"
   manageIpc: false
-  readonly property string pluginVersion: "2026.9.25+2"
+  readonly property string pluginVersion: "2026.9.25+4"
 
   property var anchorItem: null
   property var hostWidget: null
@@ -99,7 +99,8 @@ Panel {
 
   function accountUrl() {
     var origin = root.savedOrigin().replace(/\/+$/, "")
-    return origin + "/account#create-token"
+    // Account page lists devices and PATs (Clerk menu). Prefer this over #create-token.
+    return origin + "/account"
   }
 
   function saveSetting(key, value) {
@@ -185,7 +186,7 @@ Panel {
     root.userCode = ""
     root.verificationUri = ""
     root.loginSaved = false
-    root.status = "Opening Genos to sign in (plugin " + root.pluginVersion + ")"
+    root.status = "Opening Genos to sign in"
     root.startHelper(["login"], false)
   }
 
@@ -198,12 +199,19 @@ Panel {
   }
 
   function openWithBrowser(url) {
+    // Prefer xdg-open with portal/desktop env. Qt.openUrlExternally can report
+    // success in Quickshell without actually opening a browser, which left
+    // Sign-in and Manage tokens stuck with no page.
     if (!root.allowedUri(url) || opener.running) return
-    if (root.tryOpenUrlExternally(url)) return
     opener.command = ["/usr/bin/xdg-open", url]
     opener.clearEnvironment = true
     opener.environment = root.openerEnvironment()
     opener.running = true
+  }
+
+  function openWithBrowserFallback(url) {
+    if (!root.allowedUri(url)) return
+    root.tryOpenUrlExternally(url)
   }
 
   function openVerification() {
@@ -248,6 +256,12 @@ Panel {
     root.profileServerId = ""
     root.profileSetups = []
     root.profileSelectedSetupId = ""
+  }
+
+  function clearLoginUi() {
+    root.userCode = ""
+    root.verificationUri = ""
+    root.loginOrigin = ""
   }
 
   function serverById(serverId) {
@@ -442,27 +456,32 @@ Panel {
       var uriOk = uri !== "" && root.allowedUri(uri) && root.uriMatchesOrigin(uri, root.loginOrigin)
       root.verificationUri = uriOk ? uri : ""
       if (root.userCode.length === 0 || root.verificationUri === "") {
-        root.status = "Sign in code event incomplete (plugin " + root.pluginVersion
-          + "). userCode=" + JSON.stringify(rawCode)
+        root.status = "Sign in code event incomplete. userCode=" + JSON.stringify(rawCode)
           + " verificationUri=" + JSON.stringify(rawUri)
           + " verificationPath=" + JSON.stringify(rawPath)
           + " origin=" + JSON.stringify(doc.origin)
         root.stopHelper()
         return
       }
-      root.status = "Waiting for approval — code " + root.userCode + " (plugin " + root.pluginVersion + ")"
+      root.status = "Waiting for approval — code " + root.userCode
       root.openVerification()
       return
     }
     if (doc.event === "session" && doc.token) {
+      // Save even if the panel is closed (browser focus closes it while login polls).
       root.saveSetting("token", String(doc.token))
       root.loginSaved = true
       root.needsLogin = false
+      root.clearLoginUi()
       root.status = "Signed in"
       return
     }
     if (doc.event === "stored" || (doc.ok === true && doc.stored)) {
       root.loginSaved = true
+      root.needsLogin = root.savedToken() === ""
+      if (root.savedToken() !== "") root.clearLoginUi()
+      if (root.status === "" || root.status.indexOf("Waiting for approval") === 0 || root.status === "Opening Genos to sign in")
+        root.status = "Signed in"
       return
     }
     if (doc.needsConfirm === true) {
@@ -541,24 +560,46 @@ Panel {
     if (!root.sawResult && !root.dropped && root.stderrText.length > 0) root.status = root.stderrText
     var savedLogin = root.loginSaved
     var savedAction = root.actionSaved
+    var wasLogin = root.operation === "login"
     root.loginSaved = false
     root.actionSaved = false
     root.scrubHelper()
-    if (root.opened && (savedLogin || savedAction)) Qt.callLater(root.refresh)
+    if (wasLogin && !savedLogin) {
+      // Poll ended without a token (timeout/error/cancel). Drop leftover code UI.
+      root.clearLoginUi()
+      if (root.savedToken() === "" && root.status.indexOf("Waiting for approval") === 0)
+        root.status = "Sign in timed out — try again"
+    }
+    if (savedLogin || savedAction) {
+      if (root.opened) Qt.callLater(root.refresh)
+    }
   }
 
   onOpenedChanged: {
     if (root.opened) {
       root.settingsOpen = false
-      if (root.savedToken() === "") {
-        root.needsLogin = true
-        root.status = "Authentication not configured (plugin " + root.pluginVersion + ")"
-      } else {
-        root.status = "Loading servers (plugin " + root.pluginVersion + ")"
+      if (root.savedToken() !== "") {
+        root.clearLoginUi()
+        root.needsLogin = false
+        root.status = "Loading servers"
         root.refresh()
+        return
       }
+      root.needsLogin = true
+      // Keep code/URI while a background login poll is still running.
+      if (helper.running && root.operation === "login") {
+        if (root.userCode.length > 0)
+          root.status = "Waiting for approval — code " + root.userCode
+        else if (root.status === "")
+          root.status = "Opening Genos to sign in"
+        return
+      }
+      root.clearLoginUi()
+      root.status = "Authentication not configured"
     } else {
       root.pendingInput = ""
+      // Do not kill device-code polling when the panel closes (browser focus).
+      if (root.operation === "login" && helper.running) return
       root.stopHelper()
     }
   }
@@ -624,6 +665,7 @@ Panel {
       if (code === 0) return
       var cmd = opener.command
       var opened = cmd && cmd.length > 1 ? String(cmd[1] || "") : ""
+      if (opened !== "") root.openWithBrowserFallback(opened)
       if (opened !== "" && opened === root.verificationUri) {
         var fail = "Could not open the browser"
         if (root.userCode.length > 0) fail += ". Enter code " + root.userCode
@@ -632,7 +674,7 @@ Panel {
         return
       }
       if (root.settingsOpen) {
-        root.settingsMessage = "Could not open the Genos account page"
+        root.settingsMessage = "Could not open the Genos account page. Copy the URL from Status or open genosservers.com/account."
         return
       }
       root.status = "Could not open the browser"
@@ -674,13 +716,26 @@ Panel {
           width: scroller.width
           spacing: Style.space(10)
 
-          PlainText {
+          Item {
             width: parent.width
-            text: "Genos"
-            color: root.barForeground
-            font.family: root.uiFont
-            font.pixelSize: Style.font.title
-            font.bold: true
+            height: titleText.implicitHeight
+            PlainText {
+              id: titleText
+              text: "Genos"
+              color: root.barForeground
+              font.family: root.uiFont
+              font.pixelSize: Style.font.title
+              font.bold: true
+            }
+            PlainText {
+              anchors.right: parent.right
+              anchors.verticalCenter: parent.verticalCenter
+              text: "v" + root.pluginVersion
+              color: root.barForeground
+              opacity: 0.52
+              font.family: root.uiFont
+              font.pixelSize: Style.font.caption
+            }
           }
           Column {
             width: parent.width
@@ -1009,14 +1064,14 @@ Panel {
         Row {
           spacing: Style.space(6)
           Button {
-            text: "Create a token"
+            text: "Manage tokens"
             bordered: true
             fontFamily: root.uiFont
             foreground: root.barForeground
             onClicked: root.openAccount()
           }
           Button {
-            text: "Remove token"
+            text: "Remove token from this widget"
             bordered: true
             fontFamily: root.uiFont
             foreground: root.barForeground

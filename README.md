@@ -9,14 +9,29 @@ The widget calls the Genos HTTP API itself. It does not run the `genos` program.
 ```sh
 omarchy plugin add https://github.com/AnthonyPoschen/genos-omarchy --enable
 omarchy bar move io.github.anthonyposchen.genos --section right
+omarchy restart shell
 ```
 
-To pick up a newer plugin version after an update (for example when the panel still shows a generic “Waiting for approval in the browser” with no user code), remove and re-add:
+**After any plugin add, update, or remove/re-add you must run `omarchy restart shell`.** `omarchy-shell shell rescanPlugins` alone is not enough for this bar widget: Omarchy’s Quickshell build does not reliably drop compiled QML for the same file path ([omacom/omarchy#8555](https://github.com/omacom/omarchy/issues/8555)). Without a shell restart the panel can keep an old `Panel.qml` (top-right version missing/wrong, or no `v…` caption) even when `~/.config/omarchy/plugins/io.github.anthonyposchen.genos/manifest.json` is already the new version.
+
+To pick up a newer plugin version:
 
 ```sh
 omarchy plugin remove io.github.anthonyposchen.genos
 omarchy plugin add https://github.com/AnthonyPoschen/genos-omarchy --enable
+omarchy restart shell
 ```
+
+Or, if the plugin is already installed as a git checkout:
+
+```sh
+omarchy plugin update io.github.anthonyposchen.genos --yes
+omarchy restart shell
+```
+
+**Verify load:** open the Genos panel. The top-right corner must show `v2026.9.25+4` (or the version in `manifest.json`). Status stays human (`Authentication not configured`, `Waiting for approval — code …`, etc.) without a plugin stamp. If the corner version is missing or wrong, the shell is still on stale QML — run `omarchy restart shell` again.
+
+After **Sign in**, approve in the browser even if the panel closes. Reopen: you should be authenticated (server list or Signed in), not leftover Your code / Open again with no token.
 
 ## What it talks to
 
@@ -38,7 +53,7 @@ Start is sent immediately. Stop asks for confirmation and the question names the
 
 **Primary auth:** click **Sign in**. Device auth (`POST /api/v1/auth/device/codes` and `…/tokens`) is live on production. The panel opens the approval page, shows your user code while waiting, and stores the token in the shared host store (`Secret Service` attribute `host`, or `credentials.json`) so `genos` on the same machine can reuse it.
 
-**Fallback:** paste a personal access token (PAT) in Settings and save it (or use Create a token → account page, then Connect). Use PAT / Connect when device Sign in is unavailable.
+**Fallback:** paste a personal access token (PAT) in Settings and save it (or **Manage tokens** → account page, then Connect). Use PAT / Connect when device Sign in is unavailable.
 
 Responses larger than 256 KiB are refused. A list of more than 64 servers is refused rather than cut short. Credentialed requests are not redirected.
 
@@ -61,7 +76,7 @@ The bar widget saves the token you paste in its own settings. A command that doe
 Genos API routes expect an `Authorization: Bearer …` token for your account.
 
 1. **Primary:** click **Sign in** in the panel. Approve the device in the browser (user code is shown while waiting). Production serves `POST /api/v1/auth/device/*`.
-2. **Fallback:** open **Create a token** in the panel (or visit the Genos account page), mint a personal access token, paste it, and click **Connect** (or save it in widget settings). You can also store a token with `genos auth token`.
+2. **Fallback:** open **Manage tokens** in Settings (Genos `/account`), mint a personal access token, paste it, and click **Connect** (or save it in widget settings). **Remove token from this widget** only clears the bar setting — it does not open a browser. You can also store a token with `genos auth token`.
 
 ## Removing
 
