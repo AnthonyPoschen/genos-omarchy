@@ -8,6 +8,7 @@ Panel {
   id: root
   moduleName: "io.github.anthonyposchen.genos"
   manageIpc: false
+  readonly property string pluginVersion: "2026.9.25+2"
 
   property var anchorItem: null
   property var hostWidget: null
@@ -119,7 +120,11 @@ Panel {
 
   function openerEnvironment() {
     var env = root.childEnvironment(false)
-    var keys = ["DISPLAY", "WAYLAND_DISPLAY", "XDG_CURRENT_DESKTOP", "XDG_SESSION_TYPE", "XDG_DATA_DIRS", "XDG_CONFIG_DIRS"]
+    // Portal / desktop: DISPLAY, WAYLAND_DISPLAY, DBUS, XDG_RUNTIME_DIR (also via childEnvironment)
+    var keys = [
+      "DISPLAY", "WAYLAND_DISPLAY", "DBUS_SESSION_BUS_ADDRESS", "XDG_RUNTIME_DIR",
+      "XDG_CURRENT_DESKTOP", "XDG_SESSION_TYPE", "XDG_DATA_DIRS", "XDG_CONFIG_DIRS"
+    ]
     for (var i = 0; i < keys.length; i++) {
       var value = String(Quickshell.env(keys[i]) || "")
       if (value.length > 0) env[keys[i]] = value
@@ -180,7 +185,7 @@ Panel {
     root.userCode = ""
     root.verificationUri = ""
     root.loginSaved = false
-    root.status = "Opening Genos to sign in"
+    root.status = "Opening Genos to sign in (plugin " + root.pluginVersion + ")"
     root.startHelper(["login"], false)
   }
 
@@ -428,21 +433,25 @@ Panel {
     if (!doc || typeof doc !== "object") return
     root.sawResult = true
     if (doc.event === "code") {
-      root.userCode = root.tooltipPlain(doc.userCode).slice(0, 32)
+      var rawCode = doc.userCode !== undefined && doc.userCode !== null ? doc.userCode : doc.user_code
+      var rawUri = doc.verificationUri !== undefined && doc.verificationUri !== null ? doc.verificationUri : doc.verification_uri
+      var rawPath = doc.verificationPath !== undefined && doc.verificationPath !== null ? doc.verificationPath : doc.verification_path
+      root.userCode = root.tooltipPlain(rawCode).slice(0, 32)
       root.loginOrigin = String(doc.origin || "")
-      var uri = String(doc.verificationUri || "")
+      var uri = String(rawUri || "")
       var uriOk = uri !== "" && root.allowedUri(uri) && root.uriMatchesOrigin(uri, root.loginOrigin)
       root.verificationUri = uriOk ? uri : ""
-      if (uri !== "" && !uriOk) {
-        root.status = root.userCode.length > 0
-          ? ("Approval URL blocked — enter code " + root.userCode + " on the Genos account page")
-          : "Approval URL blocked — open the Genos account page in your browser to approve"
-      } else if (root.userCode.length > 0) {
-        root.status = "Waiting for approval — code " + root.userCode
-      } else {
-        root.status = "Waiting for approval in the browser"
+      if (root.userCode.length === 0 || root.verificationUri === "") {
+        root.status = "Sign in code event incomplete (plugin " + root.pluginVersion
+          + "). userCode=" + JSON.stringify(rawCode)
+          + " verificationUri=" + JSON.stringify(rawUri)
+          + " verificationPath=" + JSON.stringify(rawPath)
+          + " origin=" + JSON.stringify(doc.origin)
+        root.stopHelper()
+        return
       }
-      if (root.verificationUri !== "") root.openVerification()
+      root.status = "Waiting for approval — code " + root.userCode + " (plugin " + root.pluginVersion + ")"
+      root.openVerification()
       return
     }
     if (doc.event === "session" && doc.token) {
@@ -543,8 +552,11 @@ Panel {
       root.settingsOpen = false
       if (root.savedToken() === "") {
         root.needsLogin = true
-        root.status = "Authentication not configured"
-      } else root.refresh()
+        root.status = "Authentication not configured (plugin " + root.pluginVersion + ")"
+      } else {
+        root.status = "Loading servers (plugin " + root.pluginVersion + ")"
+        root.refresh()
+      }
     } else {
       root.pendingInput = ""
       root.stopHelper()
