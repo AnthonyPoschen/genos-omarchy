@@ -198,8 +198,20 @@ class CredentialTests(unittest.TestCase):
         origin, token = panel.parse_settings_payload(b'{"origin":"https://genosservers.com","token":"pasted"}\n')
         self.assertEqual(origin, "https://genosservers.com")
         self.assertEqual(token, "pasted")
+        origin_only_token, token_only = panel.parse_settings_payload(b'{"token":"pasted"}\n')
+        self.assertIsNone(origin_only_token)
+        self.assertEqual(token_only, "pasted")
         self.assertEqual(panel.panel_origin(None, {}), panel.DEFAULT_ORIGIN)
         self.assertEqual(panel.panel_origin("https://genosservers.com/"), "https://genosservers.com")
+        self.assertEqual(
+            panel.panel_origin(None, {"GENOS_HOST": "https://custom.example/"}),
+            "https://custom.example",
+        )
+        # Explicit settings origin still wins over GENOS_HOST when provided (legacy stdin).
+        self.assertEqual(
+            panel.panel_origin("https://from-settings.example", {"GENOS_HOST": "https://custom.example"}),
+            "https://from-settings.example",
+        )
 
     def test_resolver_call_order_with_fakes(self):
         calls = []

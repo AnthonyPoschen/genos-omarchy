@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "io.github.anthonyposchen.genos",
   "name": "Genos",
-  "version": "2026.9.25+4",
+  "version": "2026.9.25+5",
   "author": "Anthony Poschen",
   "description": "Start, stop, and restart your Genos game servers from the bar.",
   "kinds": [
@@ -18,17 +18,9 @@
     "defaultSection": "right",
     "allowMultiple": false,
     "defaults": {
-      "origin": "https://genosservers.com",
       "token": ""
     },
     "schema": [
-      {
-        "key": "origin",
-        "type": "string",
-        "label": "Genos site",
-        "defaultValue": "https://genosservers.com",
-        "description": "The site where this account lives. Leave the default unless you use another Genos address."
-      },
       {
         "key": "token",
         "type": "string",
