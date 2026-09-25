@@ -6,7 +6,7 @@ BarWidget {
   id: root
   moduleName: "io.github.anthonyposchen.genos"
   // Keep in sync with Panel.qml pluginVersion and manifest.json version.
-  readonly property string pluginVersion: "2026.9.25+3"
+  readonly property string pluginVersion: "2026.9.25+4"
   readonly property bool opened: panelLoader.item ? panelLoader.item.opened === true : false
   readonly property bool popoutSwitchClosing: panelLoader.item ? panelLoader.item.popoutSwitchClosing === true : false
   readonly property int runningCount: panelLoader.item ? panelLoader.item.runningCount : 0

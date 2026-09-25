@@ -12,7 +12,7 @@ omarchy bar move io.github.anthonyposchen.genos --section right
 omarchy restart shell
 ```
 
-**After any plugin add, update, or remove/re-add you must run `omarchy restart shell`.** `omarchy-shell shell rescanPlugins` alone is not enough for this bar widget: Omarchy’s Quickshell build does not reliably drop compiled QML for the same file path ([omacom/omarchy#8555](https://github.com/omacom/omarchy/issues/8555)). Without a shell restart the panel can keep an old `Panel.qml` (status line shows `Authentication not configured` with no `(plugin …)` stamp) even when `~/.config/omarchy/plugins/io.github.anthonyposchen.genos/manifest.json` is already the new version.
+**After any plugin add, update, or remove/re-add you must run `omarchy restart shell`.** `omarchy-shell shell rescanPlugins` alone is not enough for this bar widget: Omarchy’s Quickshell build does not reliably drop compiled QML for the same file path ([omacom/omarchy#8555](https://github.com/omacom/omarchy/issues/8555)). Without a shell restart the panel can keep an old `Panel.qml` (top-right version missing/wrong, or no `v…` caption) even when `~/.config/omarchy/plugins/io.github.anthonyposchen.genos/manifest.json` is already the new version.
 
 To pick up a newer plugin version:
 
@@ -29,7 +29,9 @@ omarchy plugin update io.github.anthonyposchen.genos --yes
 omarchy restart shell
 ```
 
-**Verify load:** open the Genos panel with no token saved. Status must include `(plugin 2026.9.25+3)` (or whatever version is in `manifest.json`). If you only see `Authentication not configured` with no plugin stamp, the shell is still on stale QML — run `omarchy restart shell` again.
+**Verify load:** open the Genos panel. The top-right corner must show `v2026.9.25+4` (or the version in `manifest.json`). Status stays human (`Authentication not configured`, `Waiting for approval — code …`, etc.) without a plugin stamp. If the corner version is missing or wrong, the shell is still on stale QML — run `omarchy restart shell` again.
+
+After **Sign in**, approve in the browser even if the panel closes. Reopen: you should be authenticated (server list or Signed in), not leftover Your code / Open again with no token.
 
 ## What it talks to
 
