@@ -6,6 +6,7 @@ import sys
 import tempfile
 import threading
 import unittest
+from unittest import mock
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
@@ -183,18 +184,14 @@ class ConfirmTests(unittest.TestCase):
 
 
 class CredentialTests(unittest.TestCase):
-    def test_settings_token_is_the_panel_session(self):
+    def test_bar_settings_token_is_not_a_credential(self):
         resolved = panel.resolve_credential(
             ORIGIN,
-            settings_token="settings-token",
-            environ={"GENOS_TOKEN": "env-token"},
+            environ={},
             keyring_lookup=lambda _origin: "key-token",
             read_file=lambda _origin: "file-token",
         )
-        self.assertEqual((resolved.source, resolved.token), ("settings", "settings-token"))
-        with self.assertRaises(panel.CredentialError) as caught:
-            panel.resolve_credential(ORIGIN, settings_token="  ")
-        self.assertIn("Authentication not configured", str(caught.exception))
+        self.assertEqual((resolved.source, resolved.token), ("keyring", "key-token"))
         origin, token = panel.parse_settings_payload(b'{"origin":"https://genosservers.com","token":"pasted"}\n')
         self.assertEqual(origin, "https://genosservers.com")
         self.assertEqual(token, "pasted")
@@ -380,6 +377,46 @@ class CredentialTests(unittest.TestCase):
             self.assertEqual(panel.resolve_origin(env), "http://genos.localhost:8000")
             self.assertEqual(panel.resolve_origin({"GENOS_HOST": "https://genos.example"}, read_config=lambda: "http://example.com"), ORIGIN)
 
+    def test_forget_clears_keyring_and_file_without_the_token_on_argv(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            os.chmod(temporary, 0o700)
+            env = {"XDG_CONFIG_HOME": temporary, "HOME": temporary}
+            panel.write_token_to_config(ORIGIN, "stored-token", env)
+            panel.write_token_to_config("https://other.example", "other-token", env)
+            calls = []
+
+            def run(argv, input_bytes=None, timeout=10):
+                calls.append((list(argv), input_bytes))
+                return panel.CommandResult(1, b"", b"not found")
+
+            panel.forget_token(ORIGIN, run=run, environ=env)
+            self.assertEqual(len(calls), 1)
+            argv, stdin = calls[0]
+            self.assertEqual(argv[:4], [panel.SECRET_TOOL, "clear", "service", panel.SERVICE_NAME])
+            self.assertEqual(argv[4:6], ["host", ORIGIN])
+            self.assertIsNone(stdin)
+            self.assertNotIn("stored-token", json.dumps(argv))
+            self.assertIsNone(panel.read_token_from_config(ORIGIN, env))
+            self.assertEqual(panel.read_token_from_config("https://other.example", env), "other-token")
+
+    def test_do_login_does_not_emit_the_issued_token(self):
+        events = []
+
+        def fake_device_login(origin, **kwargs):
+            self.assertEqual(origin, panel.panel_origin(None))
+            self.assertIsNone(kwargs.get("on_approved"))
+            kwargs["emit"]({"event": "stored", "where": "keyring"})
+            return []
+
+        with (
+            mock.patch.object(panel, "device_login", fake_device_login),
+            mock.patch.object(panel, "emit", lambda payload: events.append(payload)),
+        ):
+            panel.do_login()
+        self.assertEqual(events, [{"event": "stored", "where": "keyring"}])
+        for event in events:
+            self.assertNotIn("token", event)
+
     def test_origin_rules(self):
         self.assertEqual(panel.canonical_origin("http://127.0.0.1:8000"), "http://127.0.0.1:8000")
         self.assertEqual(panel.canonical_origin("http://localhost:8000"), "http://localhost:8000")
@@ -409,6 +446,18 @@ class SourceTests(unittest.TestCase):
                 value = first.elts[0].value
                 if isinstance(value, str):
                     self.assertNotEqual(os.path.basename(value), "genos")
+
+    def test_panel_does_not_store_the_access_token_in_bar_settings(self):
+        source = (ROOT / "Panel.qml").read_text(encoding="utf-8")
+        self.assertEqual(source.count('saveSetting("token"'), 1)
+        self.assertIn('saveSetting("token", "")', source)
+        self.assertNotIn("--from-stdin", source)
+        self.assertNotIn("doc.token", source)
+        self.assertIn('startHelper(["connect"])', source)
+        self.assertIn('startHelper(["forget"])', source)
+        manifest = json.loads((ROOT / "manifest.json").read_text(encoding="utf-8"))
+        self.assertEqual(manifest["barWidget"]["schema"], [])
+        self.assertNotIn("token", manifest["barWidget"]["defaults"])
 
 
 class FakeServerTests(unittest.TestCase):

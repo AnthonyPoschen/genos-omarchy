@@ -8,7 +8,7 @@ Panel {
   id: root
   moduleName: "io.github.anthonyposchen.genos"
   manageIpc: false
-  readonly property string pluginVersion: "2026.9.25+5"
+  readonly property string pluginVersion: "2026.9.29+1"
 
   property var anchorItem: null
   property var hostWidget: null
@@ -41,6 +41,7 @@ Panel {
   property bool sawResult: false
   property bool loginSaved: false
   property bool actionSaved: false
+  property bool hasCredential: false
   property bool settingsOpen: false
   property string settingsMessage: ""
 
@@ -86,10 +87,6 @@ Panel {
     return env
   }
 
-  function savedToken() {
-    return String(root.setting("token", "") || "").trim()
-  }
-
   function apiOrigin() {
     var host = String(Quickshell.env("GENOS_HOST") || "").trim().replace(/\/+$/, "")
     return host.length > 0 ? host : "https://genosservers.com"
@@ -113,8 +110,9 @@ Panel {
     }
   }
 
-  function writeSettings() {
-    root.pendingInput = JSON.stringify({ token: root.savedToken() })
+  function dropWidgetToken() {
+    if (String(root.setting("token", "") || "") === "") return
+    root.saveSetting("token", "")
   }
 
   function openerEnvironment() {
@@ -144,7 +142,7 @@ Panel {
     killTimer.start()
   }
 
-  function startHelper(args, includeToken) {
+  function startHelper(args) {
     if (helper.running || !args || args.length === 0) return false
     var command = ["/usr/bin/python3", "-I", "-S", root.helperPath]
     for (var i = 0; i < args.length; i++) command.push(String(args[i]))
@@ -156,7 +154,6 @@ Panel {
     helper.command = command
     helper.clearEnvironment = true
     helper.environment = root.childEnvironment(false)
-    if (includeToken) root.writeSettings()
     deadline.interval = args[0] === "login" ? 960000 : 20000
     deadline.restart()
     helper.running = true
@@ -164,16 +161,8 @@ Panel {
   }
 
   function refresh() {
-    if (!root.opened) return
-    if (root.savedToken() === "") {
-      root.needsLogin = true
-      root.servers = []
-      root.runningCount = 0
-      root.credentialSource = ""
-      return
-    }
-    root.needsLogin = false
-    root.startHelper(["list", "--from-stdin"], true)
+    if (!root.opened || helper.running) return
+    root.startHelper(["list"])
   }
 
   function toggleSettings() { root.settingsOpen = !root.settingsOpen }
@@ -185,7 +174,7 @@ Panel {
     root.verificationUri = ""
     root.loginSaved = false
     root.status = "Opening Genos to sign in"
-    root.startHelper(["login"], false)
+    root.startHelper(["login"])
   }
 
   function tryOpenUrlExternally(url) {
@@ -217,13 +206,15 @@ Panel {
   }
 
   function clearToken() {
-    root.saveSetting("token", "")
+    root.dropWidgetToken()
     settingsTokenField.text = ""
     root.servers = []
     root.runningCount = 0
     root.needsLogin = true
+    root.hasCredential = false
     root.status = ""
-    root.settingsMessage = "Token removed from this widget."
+    root.settingsMessage = "Removing saved token"
+    if (!root.startHelper(["forget"])) root.settingsMessage = "Could not remove the saved token"
   }
 
   function openAccount() {
@@ -288,7 +279,7 @@ Panel {
     root.clearConfirm()
     root.clearProfileChooser()
     root.status = ""
-    root.startHelper(["setups", serverId, "--from-stdin"], true)
+    root.startHelper(["setups", serverId])
   }
 
   function requestSelectSetup(row, setup) {
@@ -350,7 +341,7 @@ Panel {
     var args = ["action", serverId, action]
     if (confirmed) args.push("--confirmed")
     root.actionSaved = false
-    root.startHelper(args, true)
+    root.startHelper(args)
   }
 
   function commitSelectSetup(serverId, setupId, confirmed) {
@@ -363,7 +354,7 @@ Panel {
     }
     if (confirmed) args.push("--confirmed")
     root.actionSaved = false
-    root.startHelper(args, true)
+    root.startHelper(args)
   }
 
   function commitUnloadSetup(serverId, confirmed) {
@@ -376,7 +367,7 @@ Panel {
     }
     if (confirmed) args.push("--confirmed")
     root.actionSaved = false
-    root.startHelper(args, true)
+    root.startHelper(args)
   }
 
   function actionAllowed(status, action) {
@@ -477,19 +468,12 @@ Panel {
       root.openVerification()
       return
     }
-    if (doc.event === "session" && doc.token) {
-      // Save even if the panel is closed (browser focus closes it while login polls).
-      root.saveSetting("token", String(doc.token))
-      root.loginSaved = true
-      root.needsLogin = false
-      root.clearLoginUi()
-      root.status = "Signed in"
-      return
-    }
     if (doc.event === "stored" || (doc.ok === true && doc.stored)) {
       root.loginSaved = true
-      root.needsLogin = root.savedToken() === ""
-      if (root.savedToken() !== "") root.clearLoginUi()
+      root.needsLogin = false
+      root.hasCredential = true
+      root.clearLoginUi()
+      if (root.operation === "connect") root.settingsMessage = root.tooltipPlain(doc.message || "Token saved.")
       if (root.status === "" || root.status.indexOf("Waiting for approval") === 0 || root.status === "Opening Genos to sign in")
         root.status = "Signed in"
       return
@@ -530,6 +514,7 @@ Panel {
       root.servers = rows
       root.runningCount = root.countRunning(rows)
       root.needsLogin = false
+      root.hasCredential = true
       root.credentialSource = ""
       root.status = rows.length === 0 ? "No servers on this account." : ""
       return
@@ -553,12 +538,25 @@ Panel {
       root.status = doc.action === "unload-setup" ? "Unloaded profile" : "Selected profile"
       return
     }
+    if (doc.ok === true && doc.cleared === true) {
+      root.needsLogin = true
+      root.hasCredential = false
+      root.servers = []
+      root.runningCount = 0
+      root.settingsMessage = "Saved token removed."
+      root.status = ""
+      return
+    }
     if (doc.ok === false || doc.error) {
       if (doc.error === "credentials") {
         root.needsLogin = true
+        root.hasCredential = false
         root.servers = []
         root.runningCount = 0
         root.clearProfileChooser()
+      }
+      if (root.operation === "connect" || root.operation === "forget") {
+        root.settingsMessage = root.tooltipPlain(doc.message || "Request failed")
       }
       root.status = root.tooltipPlain(doc.message || "Request failed")
     }
@@ -577,7 +575,7 @@ Panel {
     if (wasLogin && !savedLogin) {
       // Poll ended without a token (timeout/error/cancel). Drop leftover code UI.
       root.clearLoginUi()
-      if (root.savedToken() === "" && root.status.indexOf("Waiting for approval") === 0)
+      if (root.status.indexOf("Waiting for approval") === 0)
         root.status = "Sign in timed out — try again"
     }
     if (savedLogin || savedAction) {
@@ -588,24 +586,16 @@ Panel {
   onOpenedChanged: {
     if (root.opened) {
       root.settingsOpen = false
-      if (root.savedToken() !== "") {
-        root.clearLoginUi()
-        root.needsLogin = false
-        root.status = "Loading servers"
-        root.refresh()
-        return
-      }
-      root.needsLogin = true
-      // Keep code/URI while a background login poll is still running.
       if (helper.running && root.operation === "login") {
+        root.needsLogin = true
         if (root.userCode.length > 0)
           root.status = "Waiting for approval — code " + root.userCode
         else if (root.status === "")
           root.status = "Opening Genos to sign in"
         return
       }
-      root.clearLoginUi()
-      root.status = "Authentication not configured"
+      root.status = "Loading servers"
+      root.refresh()
     } else {
       root.pendingInput = ""
       // Do not kill device-code polling when the panel closes (browser focus).
@@ -613,6 +603,7 @@ Panel {
       root.stopHelper()
     }
   }
+  Component.onCompleted: root.dropWidgetToken()
   Component.onDestruction: {
     root.stopHelper()
     root.scrubHelper()
@@ -646,7 +637,7 @@ Panel {
     workingDirectory: String(Quickshell.env("HOME") || "/")
     environment: ({ "PATH": "/usr/bin" })
     onStarted: {
-      if (root.pendingInput.length > 0 && (root.operation === "list" || root.operation === "action" || root.operation === "setups" || root.operation === "select-setup" || root.operation === "unload-setup")) {
+      if (root.pendingInput.length > 0 && root.operation === "connect") {
         var chunk = root.pendingInput
         root.pendingInput = ""
         helper.write(chunk + "\n")
@@ -1082,7 +1073,7 @@ Panel {
 
         PlainText {
           width: parent.width
-          text: root.savedToken() === "" ? "No token saved yet." : "A token is saved with this widget."
+          text: root.hasCredential ? "A token is saved for this machine." : "No token saved yet."
           wrapMode: Text.WordWrap
           color: root.barForeground
           font.family: root.uiFont
@@ -1093,16 +1084,23 @@ Panel {
           width: parent.width
           password: true
           maximumLength: 4096
-          placeholderText: "Replace personal access token"
+          placeholderText: "Paste personal access token and press Enter"
           font.family: root.uiFont
           foreground: root.barForeground
           onAccepted: {
             var value = String(text || "").trim()
             text = ""
             if (value === "") return
-            root.saveSetting("token", value)
-            root.needsLogin = false
-            root.settingsMessage = "Token saved."
+            if (helper.running) {
+              root.settingsMessage = "Wait for the current request to finish"
+              return
+            }
+            root.pendingInput = value
+            root.settingsMessage = "Saving token"
+            if (!root.startHelper(["connect"])) {
+              root.pendingInput = ""
+              root.settingsMessage = "Could not save the token"
+            }
           }
         }
         Row {
@@ -1115,11 +1113,11 @@ Panel {
             onClicked: root.openAccount()
           }
           Button {
-            text: "Remove token from this widget"
+            text: "Remove saved token"
             bordered: true
             fontFamily: root.uiFont
             foreground: root.barForeground
-            enabled: root.savedToken() !== ""
+            enabled: !helper.running
             onClicked: root.clearToken()
           }
         }

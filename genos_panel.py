@@ -337,17 +337,10 @@ def _validate_token(token: str) -> None:
 def resolve_credential(
     origin: str,
     *,
-    settings_token: str | None = None,
     environ: Mapping[str, str] | None = None,
     keyring_lookup: Callable[[str], str | None] | None = None,
     read_file: Callable[[str], str | None] | None = None,
 ) -> Resolved:
-    if settings_token is not None:
-        token = settings_token.strip()
-        if token == "":
-            raise CredentialError("Authentication not configured.")
-        _validate_token(token)
-        return Resolved(token, "settings")
     env = os.environ if environ is None else environ
     token = env.get("GENOS_TOKEN")
     if isinstance(token, str) and token.strip() != "":
@@ -578,10 +571,7 @@ def _load_hosts(dirfd: int) -> dict[str, dict[str, str]]:
     return clean
 
 
-def write_token_in_dirfd(dirfd: int, origin: str, token: str) -> None:
-    _validate_token(token)
-    hosts = _load_hosts(dirfd)
-    hosts[origin] = {"token": token}
+def _publish_hosts(dirfd: int, hosts: dict[str, dict[str, str]]) -> None:
     payload = (json.dumps({"hosts": hosts}, indent=2, sort_keys=True) + "\n").encode("utf-8")
     if len(payload) > CRED_MAX:
         raise CredentialError("credentials file would exceed the size limit")
@@ -613,6 +603,13 @@ def write_token_in_dirfd(dirfd: int, origin: str, token: str) -> None:
         os.close(fd)
 
 
+def write_token_in_dirfd(dirfd: int, origin: str, token: str) -> None:
+    _validate_token(token)
+    hosts = _load_hosts(dirfd)
+    hosts[origin] = {"token": token}
+    _publish_hosts(dirfd, hosts)
+
+
 def write_token_file(directory: str, origin: str, token: str) -> None:
     dirfd = open_directory(directory)
     try:
@@ -627,6 +624,44 @@ def write_token_to_config(origin: str, token: str, environ: Mapping[str, str] | 
         write_token_in_dirfd(dirfd, origin, token)
     finally:
         os.close(dirfd)
+
+
+def clear_token_in_dirfd(dirfd: int, origin: str) -> None:
+    hosts = _load_hosts(dirfd)
+    if origin not in hosts:
+        return
+    del hosts[origin]
+    _publish_hosts(dirfd, hosts)
+
+
+def clear_token_from_config(origin: str, environ: Mapping[str, str] | None = None) -> None:
+    try:
+        dirfd = open_genos_config_dir(environ, create=False)
+    except FileNotFoundError:
+        return
+    try:
+        clear_token_in_dirfd(dirfd, origin)
+    finally:
+        os.close(dirfd)
+
+
+def forget_token(
+    origin: str,
+    *,
+    run: Callable[..., CommandResult] | None = None,
+    environ: Mapping[str, str] | None = None,
+) -> None:
+    checked = canonical_origin(origin)
+    runner = run_command if run is None else run
+    try:
+        runner(
+            [SECRET_TOOL, "clear", "service", SERVICE_NAME, "host", checked],
+            input_bytes=None,
+            timeout=15,
+        )
+    except (CredentialError, FileNotFoundError, OSError):
+        pass
+    clear_token_from_config(checked, environ)
 
 
 def _child_env() -> dict[str, str]:
@@ -1269,7 +1304,7 @@ def device_login(
     sleeper = time.sleep if sleep is None else sleep
     now = time.monotonic if clock is None else clock
     saver = store or (lambda item, value: store_token(item, value))
-    headers = {"Accept": "application/json", "Content-Type": "application/json", "User-Agent": "genos-omarchy/2026.9.25"}
+    headers = {"Accept": "application/json", "Content-Type": "application/json", "User-Agent": "genos-omarchy/2026.9.29"}
     machine = socket.gethostname() if machine_name is None else machine_name
     start = device_code_request(checked, machine)
     status, data = client.request(
@@ -1389,7 +1424,7 @@ def do_connect(
 ) -> dict[str, object]:
     token = read_stdin_token() if read_token is None else read_token()
     try:
-        checked = resolve_origin() if origin is None else canonical_origin(origin)
+        checked = panel_origin(None) if origin is None else canonical_origin(origin)
         where = store_token(checked, token) if store is None else store(checked, token)
     finally:
         token = ""
@@ -1399,6 +1434,11 @@ def do_connect(
         else "Saved the token in the keyring."
     )
     return {"ok": True, "stored": where, "message": message}
+
+
+def do_forget() -> dict[str, object]:
+    forget_token(panel_origin(None))
+    return {"ok": True, "cleared": True, "message": "Removed the saved token."}
 
 
 def _scrub(payload: dict[str, object], token: str) -> dict[str, object]:
@@ -1566,32 +1606,29 @@ def _public_message(exc: BaseException) -> str:
 
 
 def do_login() -> None:
-    def reveal(token: str) -> None:
-        emit({"event": "session", "token": token})
-
-    device_login(panel_origin(None), on_approved=reveal, emit=lambda event: emit(_scrub(event, "")))
+    device_login(panel_origin(None), emit=emit)
 
 
 def main(argv: list[str] | None = None) -> int:
     args = list(sys.argv[1:] if argv is None else argv)
     try:
         if not args or args[0] in ("-h", "--help"):
-            emit({"ok": False, "error": "usage", "message": "usage: list | action | setups | select-setup | unload-setup | login | connect"})
+            emit({"ok": False, "error": "usage", "message": "usage: list | action | setups | select-setup | unload-setup | login | connect | forget"})
             return 2
         command = args[0]
         from_stdin = "--from-stdin" in args[1:]
         settings_origin = None
-        settings_token = None
         if from_stdin:
-            settings_origin, settings_token = read_settings_payload()
+            # Older panels sent the bar-settings token in this payload. Ignore it.
+            settings_origin, _discarded = read_settings_payload()
         if command == "list":
             origin = panel_origin(settings_origin)
-            credential = resolve_credential(origin, settings_token=settings_token) if from_stdin else resolve_credential(origin)
+            credential = resolve_credential(origin)
             emit(do_list(origin=origin, credential=credential))
         elif command == "action":
             server_id, action, confirmed = parse_action_args([arg for arg in args[1:] if arg != "--from-stdin"])
             origin = panel_origin(settings_origin)
-            credential = resolve_credential(origin, settings_token=settings_token) if from_stdin else resolve_credential(origin)
+            credential = resolve_credential(origin)
             try:
                 emit(do_action(server_id, action, confirmed, origin=origin, credential=credential))
             except ConfirmRequired as exc:
@@ -1607,14 +1644,14 @@ def main(argv: list[str] | None = None) -> int:
         elif command == "setups":
             server_id = parse_setups_args([arg for arg in args[1:] if arg != "--from-stdin"])
             origin = panel_origin(settings_origin)
-            credential = resolve_credential(origin, settings_token=settings_token) if from_stdin else resolve_credential(origin)
+            credential = resolve_credential(origin)
             emit(do_setups(server_id, origin=origin, credential=credential))
         elif command == "select-setup":
             server_id, setup_id, confirmed, expected = parse_select_setup_args(
                 [arg for arg in args[1:] if arg != "--from-stdin"]
             )
             origin = panel_origin(settings_origin)
-            credential = resolve_credential(origin, settings_token=settings_token) if from_stdin else resolve_credential(origin)
+            credential = resolve_credential(origin)
             try:
                 emit(
                     do_select_setup(
@@ -1642,7 +1679,7 @@ def main(argv: list[str] | None = None) -> int:
                 [arg for arg in args[1:] if arg != "--from-stdin"]
             )
             origin = panel_origin(settings_origin)
-            credential = resolve_credential(origin, settings_token=settings_token) if from_stdin else resolve_credential(origin)
+            credential = resolve_credential(origin)
             try:
                 emit(
                     do_unload_setup(
@@ -1667,6 +1704,8 @@ def main(argv: list[str] | None = None) -> int:
             do_login()
         elif command == "connect":
             emit(do_connect())
+        elif command == "forget":
+            emit(do_forget())
         else:
             emit({"ok": False, "error": "usage", "message": "unknown command"})
             return 2

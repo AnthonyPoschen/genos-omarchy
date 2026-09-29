@@ -29,7 +29,7 @@ omarchy plugin update io.github.anthonyposchen.genos --yes
 omarchy restart shell
 ```
 
-**Verify load:** open the Genos panel. The top-right corner must show `v2026.9.25+5` (or the version in `manifest.json`). Status stays human (`Authentication not configured`, `Waiting for approval — code …`, etc.) without a plugin stamp. If the corner version is missing or wrong, the shell is still on stale QML — run `omarchy restart shell` again.
+**Verify load:** open the Genos panel. The top-right corner must show `v2026.9.29+1` (or the version in `manifest.json`). Status stays human (`Authentication not configured`, `Waiting for approval — code …`, etc.) without a plugin stamp. If the corner version is missing or wrong, the shell is still on stale QML — run `omarchy restart shell` again.
 
 After **Sign in**, approve in the browser even if the panel closes. Reopen: you should be authenticated (server list or Signed in), not leftover Your code / Open again with no token.
 
@@ -53,7 +53,7 @@ Start is sent immediately. Stop asks for confirmation and the question names the
 
 **Primary auth:** click **Sign in**. Device auth (`POST /api/v1/auth/device/codes` and `…/tokens`) is live on production. The panel opens the approval page, shows your user code while waiting, and stores the token in the shared host store (`Secret Service` attribute `host`, or `credentials.json`) so `genos` on the same machine can reuse it.
 
-**Fallback:** paste a personal access token (PAT) in Settings and save it (or **Manage tokens** → account page, then Connect). Use PAT / Connect when device Sign in is unavailable.
+**Fallback:** paste a personal access token (PAT) in Settings and press Enter. The panel sends that token to the helper on stdin. **Manage tokens** opens the account page. Use the paste when device Sign in is unavailable.
 
 Responses larger than 256 KiB are refused. A list of more than 64 servers is refused rather than cut short. Credentialed requests are not redirected.
 
@@ -61,22 +61,20 @@ Responses larger than 256 KiB are refused. A list of more than 64 servers is ref
 
 The first match wins:
 
-The bar widget saves the token you paste in its own settings. A command that does not pass that setting still checks, in order:
-
 1. `GENOS_TOKEN`, when it is set and not empty.
 2. A Secret Service item with service `genos` and attribute `host` equal to the API origin. The helper runs `/usr/bin/secret-tool lookup service genos host <origin>`. The token is read from stdout, not from the command line. The `username` attribute is not used.
 3. `$XDG_CONFIG_HOME/genos/credentials.json` (default `~/.config/genos/credentials.json`), and only when that file is mode `0600`. If it is group or world readable, the panel refuses it and tells you to `chmod 0600` it. The file looks like `{"hosts":{"https://origin":{"token":"..."}}}`.
 
-`~/.config/genos/local.env` is not read. A token is not passed on a command line, written into the log, or kept on a QML property after the request finishes.
+`~/.config/genos/local.env` is not read. A token is not passed on a command line, written into the log, kept in the bar widget settings, or kept on a QML property after the request finishes.
 
-**Sign in** (device login) and **Connect** (paste PAT) store the token with `secret-tool` (token on stdin). If the keyring is unavailable, they write the credentials file at mode `0600` and say they did. Connect reads the pasted token from the helper's stdin. Prefer **Sign in**; use Connect / paste PAT as a fallback.
+**Sign in** (device login) and pasting a PAT both store the token with `secret-tool` (token on stdin). If the keyring is unavailable, they write the credentials file at mode `0600` and say they did. The paste field reads the token from the helper's stdin. Prefer **Sign in**. A token that an older version stored in the bar settings is cleared when this panel loads; sign in again or paste the token and press Enter.
 
 ## Obtaining a token
 
 Genos API routes expect an `Authorization: Bearer …` token for your account.
 
 1. **Primary:** click **Sign in** in the panel. Approve the device in the browser (user code is shown while waiting). Production serves `POST /api/v1/auth/device/*`.
-2. **Fallback:** open **Manage tokens** in Settings (Genos `/account`), mint a personal access token, paste it, and click **Connect** (or save it in widget settings). **Remove token from this widget** only clears the bar setting — it does not open a browser. You can also store a token with `genos auth token`.
+2. **Fallback:** open **Manage tokens** in Settings (Genos `/account`), mint a personal access token, paste it into Settings, and press Enter. **Remove saved token** deletes the keyring item and the credentials file entry for this API host. It does not open a browser. You can also store a token with `genos auth token`.
 
 ## Removing
 
