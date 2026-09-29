@@ -39,6 +39,7 @@ MENU_FIELDS = (
     "selectedSetupID",
     "selectedSetupName",
     "canChangeProfile",
+    "ownerEmail",
 )
 SETUP_FIELDS = (
     "id",
@@ -205,6 +206,13 @@ def parse_menu(document: object) -> list[dict[str, object]]:
         if not isinstance(selected_setup_name, str):
             raise ParseError("selectedSetupName is invalid")
         status_text = display_text(status, TEXT_MAX)
+        access = entry.get("access")
+        owner_email = ""
+        if isinstance(access, dict) and access.get("role") == "member":
+            raw_email = access.get("ownerEmail", "")
+            if not isinstance(raw_email, str):
+                raise ParseError("owner email is invalid")
+            owner_email = display_text(raw_email, TEXT_MAX)
         row = {
             "id": server_id,
             "name": name,
@@ -220,6 +228,7 @@ def parse_menu(document: object) -> list[dict[str, object]]:
             "selectedSetupID": selected_setup_id,
             "selectedSetupName": display_text(selected_setup_name, NAME_MAX),
             "canChangeProfile": status_text == STOPPED_STATUS,
+            "ownerEmail": owner_email,
         }
         row["restartNeedsConfirm"] = needs_confirmation("restart", row)
         row["confirmStop"] = confirm_message("stop", row)

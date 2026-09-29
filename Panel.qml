@@ -872,6 +872,15 @@ Panel {
                   font.pixelSize: Style.font.bodySmall
                 }
                 PlainText {
+                  text: (String(modelData.status || "").length > 0 ? " · " : "") + "Shared by " + String(modelData.ownerEmail || "")
+                  visible: String(modelData.ownerEmail || "").length > 0
+                  elide: Text.ElideRight
+                  color: root.barForeground
+                  opacity: 0.72
+                  font.family: root.uiFont
+                  font.pixelSize: Style.font.bodySmall
+                }
+                PlainText {
                   text: " · "
                   visible: String(modelData.status || "").length > 0 && String(modelData.selectedSetupName || "").length > 0
                   color: root.barForeground
